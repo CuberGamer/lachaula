@@ -1,0 +1,116 @@
+/* Base global del tema oscuro */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html,
+body {
+    width: 100%;
+    min-height: 100%;
+}
+
+:root {
+    --primary-color: #24d7d0;
+    --secondary-color: #ff4f8b;
+    --background-color: #17152b;
+    --surface-color: #25213f;
+    --text-color: #fff8e8;
+    --text-secondary: #d8d2c4;
+    --border-color: #514a75;
+    --success-color: #22c55e;
+    --warning-color: #facc15;
+    --danger-color: #ff4f8b;
+    --shadow: 0 10px 30px rgba(0, 0, 0, .3);
+}
+
+body {
+    color: var(--text-color);
+    background:
+        radial-gradient(circle at 15% 10%, rgba(36, 215, 208, .16), transparent 32%),
+        radial-gradient(circle at 85% 90%, rgba(255, 79, 139, .14), transparent 34%),
+        var(--background-color);
+    font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+    transition: background .3s ease, color .3s ease;
+}
+
+.card {
+    background: var(--surface-color);
+    border: 2px solid var(--border-color);
+    border-radius: 20px;
+    box-shadow: var(--shadow);
+}
+
+.btn {
+    border: none;
+    border-radius: 14px;
+    padding: 14px 24px;
+    cursor: pointer;
+    font-weight: bold;
+    transition: transform .2s ease, opacity .2s ease;
+}
+
+.btn:hover { transform: translateY(-2px); }
+.btn-primary { background: var(--primary-color); color: white; }
+.btn-success { background: var(--success-color); color: white; }
+.btn-danger { background: var(--danger-color); color: white; }
+
+input,
+select,
+textarea {
+    width: 100%;
+    padding: 12px;
+    border: 2px solid var(--border-color);
+    border-radius: 12px;
+    background: var(--surface-color);
+    color: var(--text-color);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+    outline: 3px solid rgba(36, 215, 208, .45);
+    outline-offset: 2px;
+}
+
+button:disabled {
+    cursor: not-allowed;
+    opacity: .5;
+}
+
+.animations-disabled *,
+.animations-disabled *::before,
+.animations-disabled *::after {
+    animation: none !important;
+    transition: none !important;
+}
+
+.hidden { display: none !important; }
+.center { display: flex; justify-content: center; align-items: center; }
+.fullscreen { width: 100vw; height: 100vh; }
+
+body,
+p,
+span,
+label,
+a,
+li,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+input,
+select,
+textarea {
+    color: var(--text-color);
+}
+
+input::placeholder,
+textarea::placeholder {
+    color: var(--text-secondary);
+}
+
+a { color: var(--primary-color); }

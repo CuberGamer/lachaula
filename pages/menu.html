@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>La Chaula</title>
+    
+    <link rel="stylesheet" href="../css/global.css">
+    <link rel="stylesheet" href="../css/retro-ui.css">
+    <link rel="stylesheet" href="../css/menu.css">
+    <link rel="stylesheet" href="../css/ssf-theme.css">
+    <link rel="stylesheet" href="../css/arcade.css">
+</head>
+<body class="menu-page">
+<script src="../js/arcade/almacen.js"></script>
+<script src="../js/music.js"></script>
+
+    <!-- ========================= -->
+    <!-- MENU PRINCIPAL -->
+    <!-- ========================= -->
+
+    <main id="main-menu" class="view active smash-ui-container">
+
+        <!-- El logo va arriba, en el cielo oscuro entre los reflectores de la foto de fondo. -->
+        <h1 class="logo-container">
+            <img src="../img/logo.png" alt="La Chaula">
+        </h1>
+
+        <!-- JUGAR ONLINE ocupa toda la fila de arriba; CONFIGURACION y SALIR van abajo, lado a lado. -->
+        <div class="menu-grid">
+
+           <button id="btnPlayOnline" class="menu-card smash-panel menu-card--play" type="button" data-nav data-nav-inicial data-nav-sonido="elegir">
+                <div class="menu-card__image"></div>
+
+                <div class="menu-card__content">
+                    <span class="menu-card__subtitle">
+                        SALAS HASTA 5 VS 5
+                    </span>
+
+                    <h2>JUGAR ONLINE</h2>
+                </div>
+
+            </button>
+
+           <button id="btnSettings" class="menu-card smash-panel menu-card--settings" type="button" data-nav aria-label="Configuración" title="Configuración">
+
+                <div class="menu-card__image"></div>
+
+                <div class="menu-card__content">
+                    <span class="menu-card__subtitle">
+                        AJUSTES
+                    </span>
+
+                    <!-- Sin tilde a propósito: la fuente pixel dibuja mal las mayúsculas acentuadas (el nombre correcto va en aria-label). -->
+                    <h2>CONFIGURACION</h2>
+                </div>
+
+            </button>
+
+            <button id="btnExit" class="menu-card smash-panel menu-card--exit" type="button" data-nav>
+
+                <div class="menu-card__image"></div>
+
+                <div class="menu-card__content">
+                    <span class="menu-card__subtitle">
+                        SISTEMA
+                    </span>
+
+                    <h2>SALIR</h2>
+                    
+                </div>
+
+            </button>
+
+        </div>
+
+        <p class="arcade-pie">▲▼◀▶ ELEGIR · PATEAR ACEPTA · SOLO JUGADOR 1</p>
+
+    </main>
+
+    <script src="../js/arcade/controles.js"></script>
+    <script src="../js/arcade/sonidos.js"></script>
+    <script src="../js/arcade/navegacion.js"></script>
+    <script src="../js/menu.js"></script>
+
+<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/vce701823e78c4301a35b7e07294d87301792088814092" integrity="sha512-UKNk8GbxkABxKcXYuLkO16EleLGUkcvJWtpSNmExE0Too3ZaFAxTscNWEc1OdAv5/BikHawapSCaiD2XCmp+Bw==" data-cf-beacon='{"version":"2024.11.0","token":"20520f566a3745b6b6de39ad27ee9778","r":1,"spa":2}' crossorigin="anonymous"></script>
+</body>
+</html>

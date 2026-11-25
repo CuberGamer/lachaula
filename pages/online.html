@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>La Chaula | Online</title>
+    <link rel="stylesheet" href="../css/global.css">
+    <link rel="stylesheet" href="../css/crear-sala.css">
+    <link rel="stylesheet" href="../css/ssf-theme.css">
+    <link rel="stylesheet" href="../css/retro-ui.css">
+    <link rel="stylesheet" href="../css/arcade.css">
+    <link rel="stylesheet" href="../css/online.css">
+</head>
+<body class="online">
+<script src="../js/arcade/almacen.js"></script>
+<script src="../js/music.js"></script>
+
+    <!-- Estado de la conexión: siempre visible arriba a la derecha. -->
+    <span id="estadoConexion" class="online-conexion">Conectando…</span>
+
+    <!-- ========================= -->
+    <!-- LISTA DE SALAS            -->
+    <!-- Misma estructura que "Partida local" de develop. -->
+    <!-- ========================= -->
+
+    <main id="vistaSalas" class="admin-page local-config online-salas">
+        <header class="admin-header">
+            <div class="logo-placeholder"></div>
+        </header>
+
+        <div class="header-info">
+            <h1 class="ssf-title">JUGAR ONLINE</h1>
+            <!-- Mayúsculas sin tilde: la fuente pixel dibuja mal Ó/Á (el texto correcto va en title). -->
+            <p class="ssf-subtitle" title="Creá una sala o entrá a una">Crea una sala o entra a una · hasta 5 vs 5</p>
+        </div>
+
+        <section class="admin-content online-salas__contenido">
+            <article class="panel-card ssf-card-primary">
+                <h2 class="ssf-subtitle">Tu jugador</h2>
+
+                <div class="form-group">
+                    <label for="nombreJugador">Nombre</label>
+                    <input id="nombreJugador" type="text" maxlength="16" autocomplete="nickname" placeholder="Ej: Facu">
+                </div>
+                <div class="form-group">
+                    <label for="avatarJugador" title="Lo que se ve dentro de tu círculo (vacío = tu número)">Avatar (máx. 2 caracteres)</label>
+                    <input id="avatarJugador" class="online-avatar__input" type="text" maxlength="16" autocomplete="off" placeholder="10">
+                </div>
+
+                <h2 class="ssf-subtitle online-salas__subtitulo">Crear sala</h2>
+
+                <form id="formCrear">
+                    <div class="form-group">
+                        <label for="nombreSala">Nombre de la sala</label>
+                        <input id="nombreSala" type="text" maxlength="30" placeholder="Sala de …">
+                    </div>
+                    <div class="form-group">
+                        <label for="claveSala" title="Contraseña (opcional)">Contrasena (opcional)</label>
+                        <input id="claveSala" type="text" maxlength="20" autocomplete="off" placeholder="Sin contraseña">
+                    </div>
+                    <div class="form-group">
+                        <label for="maxJugadores" title="Máximo de jugadores">Maximo de jugadores</label>
+                        <select id="maxJugadores">
+                            <option value="0" selected>Sin límite</option>
+                            <option value="2">2 (1v1)</option>
+                            <option value="4">4 (2v2)</option>
+                            <option value="6">6 (3v3)</option>
+                            <option value="8">8 (4v4)</option>
+                            <option value="10">10 (5v5)</option>
+                            <option value="14">14 (7v7)</option>
+                            <option value="22">22 (11v11)</option>
+                        </select>
+                    </div>
+                </form>
+            </article>
+
+            <article class="panel-card ssf-card online-lista">
+                <div class="online-lista__cabecera">
+                    <h2 class="ssf-subtitle">Salas abiertas</h2>
+                    <button id="actualizarSalas" class="ssf-button" type="button" title="Actualizar" aria-label="Actualizar">↻</button>
+                </div>
+                <table>
+                    <thead>
+                        <tr><th>Sala</th><th>Jugadores</th><th>Cancha</th><th>Estado</th><th></th></tr>
+                    </thead>
+                    <tbody id="listaSalas">
+                        <tr><td colspan="5" class="online-vacio">Buscando salas…</td></tr>
+                    </tbody>
+                </table>
+                <form id="formCodigo" class="online-codigo">
+                    <input id="codigoSala" type="text" maxlength="10" placeholder="Código de sala (ej: AB12C)" autocomplete="off">
+                    <button class="ssf-button" type="submit">Entrar</button>
+                </form>
+            </article>
+        </section>
+
+        <p id="avisoSalas" class="arcade-aviso" role="alert" aria-live="polite"></p>
+
+        <footer class="admin-footer">
+            <button id="volverMenu" class="btn-secondary ssf-button ssf-button-danger" type="button">Volver</button>
+            <button class="btn-primary ssf-button" type="submit" form="formCrear">Crear sala</button>
+        </footer>
+        <p class="arcade-pie" aria-label="Escribí tu nombre, creá una sala o entrá a una de la lista.">ESCRIBI TU NOMBRE · CREA UNA SALA O ENTRA A UNA DE LA LISTA</p>
+    </main>
+
+    <!-- ========================= -->
+    <!-- SALA                      -->
+    <!-- ========================= -->
+
+    <main id="vistaSala" class="online-sala" hidden>
+        <section class="online-juego">
+            <section class="local-hud online-hud" aria-label="Marcador del partido" aria-live="polite">
+                <div class="local-team local-team--red">
+                    <span>ROJO</span>
+                    <strong id="golesRojo">0</strong>
+                </div>
+                <div class="local-clock-panel">
+                    <span id="reloj">--:--</span>
+                    <span id="faseTexto" class="online-fase"></span>
+                </div>
+                <div class="local-team local-team--blue">
+                    <span>AZUL</span>
+                    <strong id="golesAzul">0</strong>
+                </div>
+                <button id="botonPanel" class="local-button" type="button" title="Mostrar u ocultar la sala (Esc)">Sala (Esc)</button>
+            </section>
+
+            <div class="local-board online-cancha">
+                <canvas id="cancha"></canvas>
+
+                <div id="panelSala" class="online-panel">
+                    <div class="online-panel__cabecera">
+                        <div>
+                            <h2 id="tituloSala">Sala</h2>
+                            <p>Código <strong id="codigoActual">-----</strong>
+                                <button id="copiarLink" class="online-mini" type="button">Copiar link</button>
+                                <span id="candado" hidden>🔒</span>
+                            </p>
+                            <p class="online-avatar">
+                                <label for="avatarSala" title="Lo que se ve dentro de tu círculo (vacío = tu número). También: /avatar XX en el chat">Tu avatar</label>
+                                <input id="avatarSala" class="online-avatar__input" type="text" maxlength="16" autocomplete="off" placeholder="10">
+                            </p>
+                            <p class="online-avatar">
+                                <label for="cfgZoom" title="También con las teclas 0 a 7 durante el partido">Zoom</label>
+                                <select id="cfgZoom"></select>
+                                <label for="cfgExtrapolacion" title="Como en HaxBall: adelanta lo que ves para compensar el ping (también: /extrapolation 50 en el chat)">Extrapolación (ms)</label>
+                                <input id="cfgExtrapolacion" class="online-avatar__input" type="number" min="0" max="200" step="10" value="0">
+                            </p>
+                        </div>
+                        <button id="salirSala" class="ssf-button ssf-button-danger" type="button">Salir de la sala</button>
+                    </div>
+
+                    <div class="online-equipos">
+                        <section class="online-equipo online-equipo--red" data-equipo="red">
+                            <h3>ROJO <span data-cuenta></span></h3>
+                            <ul data-lista></ul>
+                            <button class="online-unirme" data-unirme="red" type="button">Unirme</button>
+                        </section>
+                        <section class="online-equipo online-equipo--spec" data-equipo="">
+                            <h3>ESPECTADORES <span data-cuenta></span></h3>
+                            <ul data-lista></ul>
+                            <button class="online-unirme" data-unirme="" type="button">Unirme</button>
+                        </section>
+                        <section class="online-equipo online-equipo--blue" data-equipo="blue">
+                            <h3>AZUL <span data-cuenta></span></h3>
+                            <ul data-lista></ul>
+                            <button class="online-unirme" data-unirme="blue" type="button">Unirme</button>
+                        </section>
+                    </div>
+
+                    <div class="online-config">
+                        <section class="online-config__cancha">
+                            <h3>CANCHA</h3>
+                            <div class="online-carrusel">
+                                <button id="mapaAnterior" class="online-flecha ssf-button" type="button" aria-label="Cancha anterior">◀</button>
+                                <figure class="online-carrusel__vista">
+                                    <canvas id="previewMapa"></canvas>
+                                    <figcaption id="nombreMapa">—</figcaption>
+                                </figure>
+                                <button id="mapaSiguiente" class="online-flecha ssf-button" type="button" aria-label="Cancha siguiente">▶</button>
+                            </div>
+                            <div id="miniaturas" class="online-miniaturas" role="listbox" aria-label="Canchas"></div>
+                        </section>
+
+                        <section id="controlesAdmin" class="online-config__reglas">
+                            <h3>PARTIDO</h3>
+                            <div class="form-group"><label for="cfgModo" title="Futsal: pelota más chica, rápida y rebotona">Modo</label><select id="cfgModo"></select></div>
+                            <div class="form-group"><label for="cfgTamano" title="Tamaño de la cancha">Tamaño de cancha</label><select id="cfgTamano"></select></div>
+                            <div class="form-group"><label for="cfgTiempo">Tiempo</label><select id="cfgTiempo"></select></div>
+                            <div class="form-group"><label for="cfgGoles" title="Límite de goles">Limite de goles</label><select id="cfgGoles"></select></div>
+                            <label class="online-check"><input id="cfgPowerUps" type="checkbox"> Power-ups (rayo, escudo y súper tiro)</label>
+                            <label class="online-check" title="Agarrar un poder nuevo se suma a los que ya tenés en vez de reemplazarlos"><input id="cfgCombinar" type="checkbox"> Combinar poderes (varios a la vez)</label>
+                            <label class="online-check"><input id="cfgBloqueo" type="checkbox"> Solo el admin arma equipos</label>
+                            <div class="online-admin__botones">
+                                <button id="mezclar" class="ssf-button" type="button">Mezclar equipos</button>
+                                <button id="pausa" class="ssf-button" type="button">Pausa (P)</button>
+                                <button id="iniciarDetener" class="ssf-button ssf-button-primary" type="button">Iniciar partido</button>
+                            </div>
+                        </section>
+                    </div>
+                    <p id="infoNoAdmin" class="online-nota" hidden>El admin elige los equipos y arranca el partido.</p>
+                    <p id="ultimoResultado" class="online-nota" hidden></p>
+                    <p class="online-nota online-nota--teclas">Moverse: flechas o WASD · Patear: Espacio o X · Chat: Enter · Panel: Esc</p>
+                </div>
+
+                <div id="cartelGol" class="online-cartel" hidden></div>
+            </div>
+        </section>
+
+        <aside class="online-chat panel-card ssf-card">
+            <h2 class="ssf-subtitle">Chat</h2>
+            <div id="chatMensajes" class="online-chat__mensajes" aria-live="polite"></div>
+            <form id="formChat" class="online-chat__form">
+                <input id="chatTexto" type="text" maxlength="140" placeholder="Enter para escribir…" autocomplete="off">
+            </form>
+        </aside>
+
+        <p id="avisoSala" class="online-aviso online-aviso--flotante" role="alert" aria-live="polite"></p>
+    </main>
+
+    <dialog id="dialogoClave" class="online-dialogo">
+        <form method="dialog">
+            <h2 class="ssf-title" title="Sala con contraseña">SALA CON CONTRASENA</h2>
+            <input id="claveIngreso" type="text" maxlength="20" autocomplete="off" placeholder="Contraseña">
+            <div class="online-dialogo__botones">
+                <button class="ssf-button ssf-button-danger" value="cancelar" type="submit">Cancelar</button>
+                <button class="ssf-button" value="entrar" type="submit">Entrar</button>
+            </div>
+        </form>
+    </dialog>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="../js/arcade/sonidos.js"></script>
+    <script src="../js/local/fisica-haxball.js"></script>
+    <script src="../js/online/red.js"></script>
+    <script src="../js/online/dibujo.js"></script>
+    <script src="../js/online/cliente.js"></script>
+<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/vce701823e78c4301a35b7e07294d87301792088814092" integrity="sha512-UKNk8GbxkABxKcXYuLkO16EleLGUkcvJWtpSNmExE0Too3ZaFAxTscNWEc1OdAv5/BikHawapSCaiD2XCmp+Bw==" data-cf-beacon='{"version":"2024.11.0","token":"20520f566a3745b6b6de39ad27ee9778","r":1,"spa":2}' crossorigin="anonymous"></script>
+</body>
+</html>
