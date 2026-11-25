@@ -1,0 +1,347 @@
+:root {
+    --primary-red: #d40034;
+    --primary-cyan: #00bcd4;
+    --primary-orange: #ff9800;
+    --primary-blue-dark: #0d47a1;
+    --primary-purple: #6a1b9a;
+    --text-light: #ffffff;
+    --space-ink: #080a14;
+    --space-violet: #2e0a5e;
+    --panel-line: rgba(255, 255, 255, .78);
+    --menu-space-center: #172b72;
+    --menu-space-edge: #2e0a5e;
+    --menu-text: #ffffff;
+    --menu-text-shadow: #000000;
+    --menu-star: rgba(255, 255, 255, .9);
+    --menu-star-cyan: rgba(0, 188, 212, .7);
+    --menu-star-warm: rgba(255, 152, 0, .65);
+    --menu-panel-shadow: rgba(0, 0, 0, .35);
+    --menu-hover-brightness: 1.18;
+    --menu-hover-saturation: 1.16;
+}
+
+/* Una sola declaración de body: el menú entra justo en la pantalla, sin scroll.
+   El fondo es la foto del estadio de noche (cover, centrada) con una capa oscura
+   encima: arriba se ven los reflectores y abajo se oscurece para que se lean los botones. */
+body {
+    width: 100%;
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+    color: var(--menu-text);
+    background-color: var(--space-ink);
+    background-image:
+        radial-gradient(ellipse at 50% 40%, transparent 35%, rgba(2, 6, 23, .55) 100%),
+        linear-gradient(180deg,
+            rgba(2, 6, 23, .30) 0%,
+            rgba(2, 6, 23, .10) 30%,
+            rgba(2, 6, 23, .45) 62%,
+            rgba(2, 6, 23, .82) 100%),
+        url("../img/fondo.jpg");
+    background-position: center, center, center;
+    background-size: cover, cover, cover;
+    background-repeat: no-repeat;
+}
+
+body::before,
+body::after {
+    position: fixed;
+    inset: -35%;
+    z-index: -1;
+    pointer-events: none;
+    content: "";
+}
+
+/* Las estrellas de retro-ui ensucian la foto: en el menú quedan apenas insinuadas. */
+body.menu-page::before { opacity: .12; }
+body.menu-page::after { opacity: .08; }
+
+/* ========================= */
+/* VISTAS */
+/* ========================= */
+
+/* 100% y no 100vw: el vw cuenta la barra de scroll y empuja todo a la derecha. */
+.view{
+
+    width:100%;
+    height:100vh;
+    height:100dvh;
+
+}
+
+.hidden{
+
+    display:none;
+}
+
+/* ========================= */
+/* MENU */
+/* ========================= */
+
+/* Tres filas: logo arriba, los botones se comen el espacio que sobra y el pie
+   queda abajo, siempre visible. */
+#main-menu{
+
+    position:relative;
+
+    display:grid;
+    grid-template-rows:auto minmax(0, 1fr) auto;
+    /* minmax(0) y no auto: si no, el ancho natural del logo (1727px) ensancha la columna. */
+    grid-template-columns:minmax(0, 1fr);
+    justify-items:center;
+    gap:clamp(8px, 2vh, 20px);
+
+    padding:clamp(12px, 3vh, 36px) clamp(16px, 3vw, 40px) 12px;
+
+}
+
+/* ========================= */
+/* LOGO */
+/* ========================= */
+
+/* El PNG tiene fondo negro: con screen el negro desaparece sobre el cielo oscuro. */
+.logo-container{
+
+    display:flex;
+    justify-content:center;
+    align-items:center;
+
+    width:min(100%, 720px);
+    height:clamp(56px, 18vh, 220px);
+
+    margin:0;
+
+    pointer-events:none;
+
+}
+
+.logo-container img{
+
+    display:block;
+
+    max-width:100%;
+    max-height:100%;
+
+    object-fit:contain;
+
+    mix-blend-mode:screen;
+
+    filter:drop-shadow(0 6px 18px rgba(0, 0, 0, .55));
+
+}
+
+/* JUGAR LOCAL arriba ocupando las dos columnas; CONFIGURACION y SALIR abajo.
+   Bloque centrado y bajo: deja ver los reflectores de los costados. */
+.menu-grid {
+    display: grid;
+    align-self: center;
+    width: min(100%, 1040px, 88vw);
+    height: min(100%, 540px);
+    min-height: 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: minmax(0, 1.35fr) minmax(0, 1fr);
+    gap: clamp(10px, 2vh, 18px) clamp(10px, 1.6vw, 18px);
+}
+
+.menu-card--play {
+    grid-column: 1 / -1;
+}
+
+/* El borde lo dibuja ::before siguiendo el clip-path: un border común queda
+   recortado en los lados inclinados y solo se ve arriba y abajo.
+   La inclinación va en px (no en %) para que las tres tarjetas tengan el mismo ángulo. */
+.smash-panel {
+    --marco: 3px;
+    --marco-x: calc(var(--marco) * 1.2);
+    --marco-color: var(--panel-line);
+    --inclinacion: clamp(16px, 2.4vw, 40px);
+    position: relative;
+    min-height: 0;
+    overflow: hidden;
+    border: 0;
+    border-radius: 0 !important;
+    clip-path: polygon(var(--inclinacion) 0, 100% 0, calc(100% - var(--inclinacion)) 100%, 0 100%);
+    color: var(--menu-text);
+    text-align: left;
+    cursor: pointer;
+    transition: filter .2s ease-out;
+    /* Se ve la foto de atrás, un poco borroneada para que no compita con el texto. */
+    -webkit-backdrop-filter: blur(3px);
+    backdrop-filter: blur(3px);
+}
+
+/* Marco: el polígono de afuera menos el de adentro (evenodd) = un borde con la forma de la tarjeta. */
+.smash-panel::before {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    pointer-events: none;
+    content: "";
+    background: var(--marco-color);
+    clip-path: polygon(evenodd,
+        var(--inclinacion) 0, 100% 0, calc(100% - var(--inclinacion)) 100%, 0 100%, var(--inclinacion) 0,
+        calc(var(--inclinacion) + var(--marco-x)) var(--marco),
+        calc(100% - var(--marco-x)) var(--marco),
+        calc(100% - var(--inclinacion) - var(--marco-x)) calc(100% - var(--marco)),
+        var(--marco-x) calc(100% - var(--marco)),
+        calc(var(--inclinacion) + var(--marco-x)) var(--marco));
+}
+
+.smash-panel::after {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    content: "";
+    opacity: .16;
+    background-image: radial-gradient(rgba(255, 255, 255, .9) 1px, transparent 1.5px);
+    background-size: 8px 8px;
+    mix-blend-mode: overlay;
+}
+
+/* Hover sin mover la tarjeta: si se agranda o sube, se desalinea la grilla. */
+.smash-panel:hover {
+    filter: brightness(var(--menu-hover-brightness)) saturate(var(--menu-hover-saturation));
+}
+
+.smash-panel:active { filter: brightness(.95); }
+
+.smash-panel:focus-visible {
+    outline: 3px solid #fff;
+    outline-offset: 5px;
+}
+
+/* Colores de siempre, semitransparentes: por detrás se adivina el estadio. */
+.menu-card--play {
+    --panel-glow: rgba(212, 0, 52, .62);
+    background: linear-gradient(135deg, rgba(166, 0, 43, .88) 0%, rgba(212, 0, 52, .80) 45%, rgba(255, 91, 56, .68) 100%);
+}
+
+.menu-card--settings{
+
+    background:
+    linear-gradient(
+        135deg,
+        rgba(37, 99, 235, .85),
+        rgba(0, 194, 255, .62)
+    );
+
+}
+
+.menu-card--exit{
+
+    background:
+    linear-gradient(
+        135deg,
+        rgba(51, 65, 85, .88),
+        rgba(100, 116, 139, .66)
+    );
+
+}
+
+/* ========================= */
+/* PLACEHOLDER */
+/* ========================= */
+
+/* Brillo diagonal de arriba, como en las tarjetas de Smash. */
+.menu-card__image{
+
+    position:absolute;
+
+    inset:0;
+
+    background:
+        linear-gradient(160deg, rgba(255,255,255,.16) 0%, rgba(255,255,255,.04) 45%, transparent 46%);
+
+}
+
+/* ========================= */
+/* TEXTO */
+/* ========================= */
+
+.menu-card__content{
+
+    position:absolute;
+
+    /* Margen izquierdo con hueco para la flecha ▶ de la selección (va en absoluto, no corre el texto). */
+    left:calc(var(--inclinacion) + clamp(30px, 3vw, 48px));
+    right:calc(var(--inclinacion) + 8px);
+    bottom:clamp(10px, 3vh, 26px);
+
+    z-index:5;
+
+}
+
+.menu-card--play .menu-card__content{
+
+    bottom:clamp(14px, 4vh, 36px);
+
+}
+
+.menu-card__subtitle {
+    display: block;
+    margin-bottom: 6px;
+    color: color-mix(in srgb, var(--menu-text) 86%, transparent);
+    font: 800 .85rem "Trebuchet MS", sans-serif;
+    letter-spacing: .2em;
+}
+
+.menu-card__content h2{
+
+    position:relative;
+
+    font-size:2.2rem;
+
+    font-weight:900;
+
+    white-space:nowrap;
+
+    text-shadow:
+        0 4px 15px rgba(0,0,0,.35);
+
+}
+
+/* ========================= */
+/* HOVER */
+/* ========================= */
+
+.smash-panel:hover .menu-card__image{
+
+    background:
+        rgba(255,255,255,.14);
+
+}
+
+/* ========================= */
+/* RESPONSIVE */
+/* ========================= */
+
+/* Angosto: las tres tarjetas en una columna, JUGAR LOCAL un poco más alta. */
+@media(max-width:600px){
+
+    .menu-grid{
+
+        grid-template-columns:minmax(0, 1fr);
+
+        grid-template-rows:minmax(0, 1.3fr) repeat(2, minmax(0, 1fr));
+
+    }
+
+}
+
+/* Pantallas bajitas: menos aire para que las tarjetas no corten el texto. */
+@media(max-height:560px){
+
+    .menu-grid{
+
+        gap:8px;
+
+    }
+
+    .menu-card__subtitle{
+
+        margin-bottom:2px;
+
+    }
+
+}
