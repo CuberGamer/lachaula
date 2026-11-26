@@ -226,7 +226,9 @@ body.online--en-sala::after {
 .online-sala[hidden],
 .online-salas[hidden],
 .online-panel[hidden],
-.online-cartel[hidden] {
+.online-cartel[hidden],
+.online-miniatura[hidden],
+.online-miniaturas__vacio[hidden] {
     display: none;
 }
 
@@ -510,11 +512,91 @@ body.online--en-sala::after {
     font-weight: 900;
 }
 
+.online-cancha__cabecera {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.online-cancha__cabecera h3 {
+    margin-bottom: 0;
+}
+
+.online-categoria {
+    display: inline-block;
+    margin-top: 3px;
+    color: #94a3b8;
+    font-size: .75rem;
+    font-weight: 700;
+}
+
+.online-mapas__barra {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 12px;
+}
+
+.online-filtros {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    flex: 1;
+}
+
+.online-filtro {
+    min-height: 0;
+    padding: 4px 8px;
+    border: 1px solid rgba(255, 255, 255, .28);
+    border-radius: 4px;
+    background: rgba(255, 255, 255, .06);
+    color: #cbd5e1;
+    cursor: pointer;
+    font-size: .72rem;
+    font-weight: 700;
+}
+
+.online-filtro:hover {
+    border-color: rgba(255, 255, 255, .55);
+    color: #fff;
+}
+
+.online-filtro--activo {
+    border-color: #ffe600;
+    background: rgba(255, 230, 0, .18);
+    color: #ffe600;
+}
+
+.online-buscar {
+    width: 155px;
+    padding: 5px 9px;
+    border: 1px solid rgba(255, 255, 255, .28);
+    border-radius: 4px;
+    background: rgba(2, 6, 23, .75);
+    color: #fff;
+    font-size: .78rem;
+}
+
 .online-miniaturas {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
     gap: 8px;
-    margin-top: 12px;
+    max-height: 220px;
+    overflow-y: auto;
+    padding-right: 4px;
+    margin-top: 10px;
+}
+
+.online-miniaturas__vacio {
+    grid-column: 1 / -1;
+    padding: 16px 8px;
+    color: #94a3b8;
+    font-size: .8rem;
+    text-align: center;
 }
 
 .online-miniatura {
@@ -531,7 +613,14 @@ body.online--en-sala::after {
     text-align: center;
 }
 
-.online-miniatura canvas {
+.online-miniatura span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.online-miniatura canvas,
+.online-miniatura img {
     display: block;
     width: 100%;
     height: auto;
@@ -663,6 +752,51 @@ body.online--en-sala::after {
     gap: 10px;
     justify-content: flex-end;
     margin-top: 14px;
+}
+
+.online-dialogo--hbs {
+    width: min(560px, 92vw);
+}
+
+.online-dialogo--hbs textarea {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid rgba(255, 255, 255, .28);
+    border-radius: 6px;
+    background: #020617;
+    color: #e2e8f0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: .78rem;
+    resize: vertical;
+}
+
+.online-importar__fila {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.online-importar__archivo {
+    color: #cbd5e1;
+    font-size: .82rem;
+}
+
+.online-importar__label {
+    display: block;
+    margin-bottom: 6px;
+    color: #e2e8f0;
+    font-size: .82rem;
+    font-weight: 700;
+}
+
+.online-importar__error {
+    min-height: 1.2em;
+    margin-top: 8px;
+    color: #f87171;
+    font-size: .82rem;
+    font-weight: 700;
 }
 
 /* ---------- Pantallas chicas ---------- */

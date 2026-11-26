@@ -62,8 +62,16 @@
         bits: 0,
         panelVisible: true,
         cartelTimeout: null,
+        mapasBase: [],
+        mapasHbs: [],
+        mapasCustom: [],
         mapas: [],
+        categoriaFiltro: 'Todos',
+        busquedaMapa: '',
+        archivoHbsNombre: '',
         ultimoDibujo: null,
+        ultimoPreviewClave: '',
+        ultimoCanchaIdleClave: '',
         zoomNivel: 0,
         extrapolacion: 0,
         camara: null,
@@ -335,10 +343,9 @@
         estado.token = respuesta.token;
         $('avatarSala').value = avatarGuardado();
         reiniciarRed();
-        if (respuesta.mapas) {
-            estado.mapas = respuesta.mapas;
-            dibujarMiniaturas();
-        }
+        if (respuesta.mapas) estado.mapasBase = respuesta.mapas;
+        if (Array.isArray(respuesta.mapasCustom)) estado.mapasCustom = respuesta.mapasCustom;
+        reconstruirMapas();
         sessionStorage.setItem(claveToken(respuesta.salaId), respuesta.token);
         history.replaceState(null, '', `?sala=${respuesta.salaId}`);
         $('vistaSalas').hidden = true;
@@ -392,6 +399,12 @@
 
     socket.on('sala:estado', sala => {
         if (sala.id === estado.salaId) actualizarSala(sala);
+    });
+
+    socket.on('sala:mapasCustom', mapas => {
+        estado.mapasCustom = Array.isArray(mapas) ? mapas : [];
+        reconstruirMapas();
+        if (estado.sala) dibujarControlesAdmin(estado.sala);
     });
 
     function actualizarSala(sala) {
@@ -509,6 +522,7 @@
     function dibujarControlesAdmin(sala) {
         const admin = soyAdmin();
         const enPartido = !!sala.partido;
+        const esHbs = !!(sala.mapa && sala.mapa.hbs);
         $('infoNoAdmin').hidden = admin;
         llenarSelect($('cfgTiempo'), sala.tiempos.map(minutos => [minutos, `${minutos} min`]));
         llenarSelect($('cfgGoles'), sala.golesValidos.map(goles => [goles, goles ? `${goles}` : 'Sin límite']));
@@ -518,13 +532,16 @@
         $('cfgTamano').value = String(sala.config.tamano || 'normal');
         $('cfgTiempo').value = String(sala.config.tiempoMin);
         $('cfgGoles').value = String(sala.config.goles);
-        $('cfgPowerUps').checked = sala.config.powerUps;
-        $('cfgCombinar').checked = !!sala.config.combinarPoderes;
+        $('cfgPowerUps').checked = esHbs ? false : sala.config.powerUps;
+        $('cfgCombinar').checked = esHbs ? false : !!sala.config.combinarPoderes;
         $('cfgBloqueo').checked = sala.config.equiposBloqueados;
         // Los que no son admin ven la configuración pero no la pueden tocar.
-        ['cfgModo', 'cfgTamano', 'cfgTiempo', 'cfgGoles', 'cfgPowerUps'].forEach(id => { $(id).disabled = !admin || enPartido; });
-        $('cfgCombinar').disabled = !admin || enPartido || !sala.config.powerUps;
+        ['cfgModo', 'cfgTamano', 'cfgPowerUps'].forEach(id => { $(id).disabled = !admin || enPartido || esHbs; });
+        ['cfgTiempo', 'cfgGoles'].forEach(id => { $(id).disabled = !admin || enPartido; });
+        $('cfgCombinar').disabled = !admin || enPartido || esHbs || !sala.config.powerUps;
         $('cfgBloqueo').disabled = !admin;
+        $('btnImportarHbs').hidden = !admin;
+        $('btnImportarHbs').disabled = enPartido;
         ['mapaAnterior', 'mapaSiguiente'].forEach(id => { $(id).hidden = !admin; $(id).disabled = enPartido; });
         document.querySelectorAll('.online-miniatura').forEach(boton => {
             const elegida = boton.dataset.mapa === sala.config.mapaId;
@@ -532,8 +549,11 @@
             boton.setAttribute('aria-selected', String(elegida));
             boton.disabled = !admin || enPartido;
         });
-        const mapa = mapaPorId(sala.config.mapaId);
-        $('nombreMapa').textContent = mapa ? mapa.name : sala.mapa.name;
+        const mapa = mapaPorId(sala.config.mapaId) || sala.mapa;
+        $('nombreMapa').textContent = mapa ? mapa.name : '—';
+        $('categoriaMapa').textContent = mapa
+            ? (mapa.hbs ? `${mapa.category || 'HaxBall'} · HaxBall .hbs` : 'Original La Chaula')
+            : '';
         document.querySelector('.online-admin__botones').hidden = !admin;
         $('mezclar').disabled = enPartido;
         $('pausa').disabled = !enPartido;
@@ -546,24 +566,150 @@
         return estado.mapas.find(mapa => mapa.id === id) || null;
     }
 
-    // Miniaturas de todas las canchas: se dibujan una vez con el mismo dibujo del partido.
+    const ORDEN_CATEGORIAS = [
+        'Todos',
+        'Originales',
+        'Futsal',
+        'Classic / Big',
+        'Real Soccer',
+        'Hockey',
+        'Basketball',
+        'Volleyball',
+        'Tennis / Ping',
+        'Otros',
+        'Importados'
+    ];
+
+    function grupoCategoria(mapa) {
+        if (!mapa || !mapa.hbs) return 'Originales';
+        if (mapa.imported || mapa.category === 'Importados') return 'Importados';
+        const cat = mapa.category || '';
+        if (cat === 'Futsal') return 'Futsal';
+        if (cat === 'Classic' || cat === 'Big') return 'Classic / Big';
+        if (cat === 'Real Soccer') return 'Real Soccer';
+        if (cat === 'Hockey') return 'Hockey';
+        if (cat === 'Basketball') return 'Basketball';
+        if (cat === 'Volleyball') return 'Volleyball';
+        if (cat === 'Tennis' || cat === 'Ping Pong') return 'Tennis / Ping';
+        return 'Otros';
+    }
+
+    function reconstruirMapas() {
+        estado.mapas = [...estado.mapasBase, ...estado.mapasHbs, ...estado.mapasCustom];
+        if (estado.salaId) {
+            dibujarFiltrosMapa();
+            dibujarMiniaturas();
+        }
+        if (estado.sala) dibujarControlesAdmin(estado.sala);
+    }
+
+    function mapasFiltrados() {
+        const q = estado.busquedaMapa.trim().toLowerCase();
+        return estado.mapas.filter(mapa => {
+            if (estado.categoriaFiltro !== 'Todos' && grupoCategoria(mapa) !== estado.categoriaFiltro) return false;
+            if (q && !`${mapa.name} ${mapa.category || ''}`.toLowerCase().includes(q)) return false;
+            return true;
+        });
+    }
+
+    function dibujarFiltrosMapa() {
+        const cont = $('filtrosMapa');
+        if (!cont) return;
+        const disponibles = new Set(['Todos']);
+        estado.mapas.forEach(m => disponibles.add(grupoCategoria(m)));
+        if (!disponibles.has(estado.categoriaFiltro)) estado.categoriaFiltro = 'Todos';
+
+        cont.textContent = '';
+        ORDEN_CATEGORIAS.filter(cat => disponibles.has(cat)).forEach(cat => {
+            const btn = crearElemento('button', 'online-filtro', cat);
+            btn.type = 'button';
+            btn.setAttribute('role', 'tab');
+            const activo = estado.categoriaFiltro === cat;
+            btn.classList.toggle('online-filtro--activo', activo);
+            btn.setAttribute('aria-selected', String(activo));
+            btn.addEventListener('click', () => {
+                estado.categoriaFiltro = cat;
+                dibujarFiltrosMapa();
+                aplicarFiltrosMapa();
+            });
+            cont.appendChild(btn);
+        });
+    }
+
+    function aplicarFiltrosMapa() {
+        const contenedor = $('miniaturas');
+        const q = estado.busquedaMapa.trim().toLowerCase();
+        let visibles = 0;
+        contenedor.querySelectorAll('.online-miniatura').forEach(boton => {
+            const cat = boton.dataset.categoria;
+            const nombre = boton.dataset.nombre || '';
+            const coincideCat = estado.categoriaFiltro === 'Todos' || cat === estado.categoriaFiltro;
+            const coincideTexto = !q || nombre.includes(q);
+            const mostrar = coincideCat && coincideTexto;
+            boton.hidden = !mostrar;
+            if (mostrar) visibles += 1;
+        });
+        let aviso = contenedor.querySelector('.online-miniaturas__vacio');
+        if (!visibles) {
+            if (!aviso) {
+                aviso = crearElemento('p', 'online-miniaturas__vacio', 'No hay mapas que coincidan con el filtro.');
+                contenedor.appendChild(aviso);
+            }
+            aviso.hidden = false;
+        } else if (aviso) {
+            aviso.hidden = true;
+        }
+    }
+
+    async function cargarCatalogoHbs() {
+        try {
+            const res = await fetch('/api/mapas-hbs');
+            if (!res.ok) return;
+            const data = await res.json();
+            if (Array.isArray(data.mapas)) {
+                estado.mapasHbs = data.mapas;
+                reconstruirMapas();
+            }
+        } catch (err) {
+            // Si falla la carga opcional de catálogo, siguen disponibles los mapas base
+        }
+    }
+
+    const cacheMiniaturas = new Map();
+
+    // Miniaturas de todas las canchas: se dibujan una vez en escala liviana y se cachean.
     function dibujarMiniaturas() {
         const contenedor = $('miniaturas');
         contenedor.textContent = '';
+        const thumbCanvas = document.createElement('canvas');
+        const dibThumb = DibujoOnline.crearDibujante(thumbCanvas);
         estado.mapas.forEach(mapa => {
+            const cat = grupoCategoria(mapa);
             const boton = crearElemento('button', 'online-miniatura');
             boton.type = 'button';
             boton.dataset.mapa = mapa.id;
+            boton.dataset.categoria = cat;
+            boton.dataset.nombre = `${mapa.name} ${mapa.category || ''}`.toLowerCase();
             boton.setAttribute('role', 'option');
-            boton.title = mapa.name;
-            const lienzo = crearElemento('canvas');
-            lienzo.width = mapa.width;
-            lienzo.height = mapa.height;
-            DibujoOnline.crearDibujante(lienzo).dibujar(DibujoOnline.estadoVacio(mapa), 0, null);
-            boton.append(lienzo, crearElemento('span', '', mapa.name));
+            boton.title = mapa.hbs ? `${mapa.name} (${mapa.category || 'HaxBall'})` : mapa.name;
+            let src = cacheMiniaturas.get(mapa.id);
+            if (!src) {
+                const tw = 160;
+                const th = Math.max(54, Math.round((tw * mapa.height) / Math.max(1, mapa.width)));
+                thumbCanvas.width = tw;
+                thumbCanvas.height = th;
+                dibThumb.dibujarMiniatura(mapa);
+                src = thumbCanvas.toDataURL('image/png');
+                cacheMiniaturas.set(mapa.id, src);
+            }
+            const img = crearElemento('img');
+            img.alt = '';
+            img.src = src;
+            boton.append(img, crearElemento('span', '', mapa.name));
             boton.addEventListener('click', () => elegirMapa(mapa.id));
             contenedor.appendChild(boton);
         });
+        aplicarFiltrosMapa();
     }
 
     function elegirMapa(mapaId) {
@@ -573,20 +719,86 @@
 
     function moverCarrusel(paso) {
         if (!estado.sala || !estado.mapas.length) return;
-        const indice = estado.mapas.findIndex(mapa => mapa.id === estado.sala.config.mapaId);
-        const siguiente = estado.mapas[(indice + paso + estado.mapas.length) % estado.mapas.length];
+        const lista = mapasFiltrados();
+        const pool = lista.length ? lista : estado.mapas;
+        const indice = pool.findIndex(mapa => mapa.id === estado.sala.config.mapaId);
+        const base = indice === -1 ? (paso > 0 ? -1 : 0) : indice;
+        const siguiente = pool[(base + paso + pool.length) % pool.length];
         elegirMapa(siguiente.id);
     }
 
     $('mapaAnterior').addEventListener('click', () => moverCarrusel(-1));
     $('mapaSiguiente').addEventListener('click', () => moverCarrusel(1));
+    $('buscarMapa').addEventListener('input', evento => {
+        estado.busquedaMapa = evento.target.value || '';
+        aplicarFiltrosMapa();
+    });
 
-    // Vista previa grande de la cancha elegida (animada como en el partido).
+    function abrirDialogoImportarHbs() {
+        if (!soyAdmin() || (estado.sala && estado.sala.partido)) return;
+        $('errorImportarHbs').textContent = '';
+        $('archivoHbs').value = '';
+        $('nombreArchivoHbs').textContent = 'Ningún archivo elegido';
+        estado.archivoHbsNombre = '';
+        $('dialogoImportarHbs').showModal();
+        $('textoHbs').focus();
+    }
+
+    $('btnImportarHbs').addEventListener('click', abrirDialogoImportarHbs);
+    $('btnElegirArchivoHbs').addEventListener('click', () => $('archivoHbs').click());
+    $('cancelarImportarHbs').addEventListener('click', () => $('dialogoImportarHbs').close());
+
+    $('archivoHbs').addEventListener('change', async evento => {
+        const archivo = evento.target.files && evento.target.files[0];
+        if (!archivo) return;
+        estado.archivoHbsNombre = archivo.name || '';
+        $('nombreArchivoHbs').textContent = archivo.name;
+        $('errorImportarHbs').textContent = '';
+        try {
+            $('textoHbs').value = await archivo.text();
+        } catch {
+            $('errorImportarHbs').textContent = 'No se pudo leer el archivo seleccionado.';
+        }
+    });
+
+    $('formImportarHbs').addEventListener('submit', async evento => {
+        evento.preventDefault();
+        const texto = $('textoHbs').value;
+        $('errorImportarHbs').textContent = '';
+        try {
+            if (window.FisicaHbs) window.FisicaHbs.parseHbsTexto(texto);
+        } catch (err) {
+            $('errorImportarHbs').textContent = err.message || 'Archivo .hbs inválido.';
+            return;
+        }
+        const btn = $('confirmarImportarHbs');
+        btn.disabled = true;
+        const respuesta = await pedir('sala:importarHbs', {
+            texto,
+            nombreArchivo: estado.archivoHbsNombre
+        });
+        btn.disabled = false;
+        if (respuesta.error) {
+            $('errorImportarHbs').textContent = respuesta.error;
+            return;
+        }
+        estado.categoriaFiltro = 'Importados';
+        $('textoHbs').value = '';
+        $('dialogoImportarHbs').close();
+        dibujarFiltrosMapa();
+        aplicarFiltrosMapa();
+    });
+
+    // Vista previa grande de la cancha elegida.
     function dibujarPreview() {
         if (!estado.panelVisible || !estado.sala) return;
         const mapa = estado.sala.mapa && estado.sala.mapa.id === estado.sala.config.mapaId
             ? estado.sala.mapa
             : (mapaPorId(estado.sala.config.mapaId) || estado.sala.mapa);
+        const clave = `${mapa.id}|${mapa.width}|${mapa.height}|${mapa.theme || ''}`;
+        const estatica = !!(mapa.hbs || mapa.theme === 'haxball');
+        if (estatica && estado.ultimoPreviewClave === clave) return;
+        estado.ultimoPreviewClave = clave;
         if (preview.width !== mapa.width || preview.height !== mapa.height) {
             preview.width = mapa.width;
             preview.height = mapa.height;
@@ -801,9 +1013,10 @@
             .filter(jugador => jugador.equipo === equipo)
             .forEach((jugador, indice) => numeros.set(jugador.id, indice + 1)));
         const pelotaPredicha = prediccionActual && prediccionActual.pelota;
+        const colorPelota = (sala.mapa && sala.mapa.ballPhysics && sala.mapa.ballPhysics.color) || null;
         base.ball = pelotaPredicha
-            ? { x: pelotaPredicha.x, y: pelotaPredicha.y, r: foto.b[2] }
-            : { x: foto.b[0], y: foto.b[1], r: foto.b[2] };
+            ? { x: pelotaPredicha.x, y: pelotaPredicha.y, r: foto.b[2], color: colorPelota }
+            : { x: foto.b[0], y: foto.b[1], r: foto.b[2], color: colorPelota };
         base.activePowerUps = (foto.u || []).map(([x, y, type, r]) => ({ x, y, type, r }));
         base.lastPowerImpact = foto.i ? { id: foto.i[0], x: foto.i[1], y: foto.i[2] } : null;
         base.players = foto.j.map(([id, x, y, r, pateando, power]) => {
@@ -856,10 +1069,20 @@
             // última foto; mirando, la foto interpolada.
             const prediccionActual = ultima ? prediccion.estadoActual(delta, estado.extrapolacion) : null;
             const foto = prediccionActual ? linea.ultima() : linea.fotoParaDibujar(Math.round(estado.extrapolacion / MS_TICK));
-            const dibujo = estadoParaDibujar(foto, prediccionActual);
-            const camara = actualizarCamara(dibujo, delta);
-            dibujante.dibujar(dibujo, foto && !foto.p ? delta : 0, celebracionDe(ultima), camara);
-            dibujarAvisoAjuste(delta);
+            if (ultima || !estado.panelVisible) {
+                const dibujo = estadoParaDibujar(foto, prediccionActual);
+                const camara = actualizarCamara(dibujo, delta);
+                dibujante.dibujar(dibujo, foto && !foto.p ? delta : 0, celebracionDe(ultima), camara);
+                dibujarAvisoAjuste(delta);
+                estado.ultimoCanchaIdleClave = '';
+            } else {
+                const mapa = estado.sala.mapa;
+                const claveIdle = `${mapa.id}|${mapa.width}|${mapa.height}`;
+                if (estado.ultimoCanchaIdleClave !== claveIdle) {
+                    estado.ultimoCanchaIdleClave = claveIdle;
+                    dibujante.dibujar(DibujoOnline.estadoVacio(mapa), 0, null, null);
+                }
+            }
             actualizarHud(ultima);
             dibujarPreview();
         }
@@ -973,7 +1196,7 @@
     }
 
     window.addEventListener('keydown', evento => {
-        if (!estado.salaId || $('dialogoClave').open) return;
+        if (!estado.salaId || $('dialogoClave').open || $('dialogoImportarHbs').open) return;
         const enTexto = escribiendo(evento.target);
         if (evento.code === 'Escape') {
             if (enTexto) evento.target.blur();
@@ -1043,5 +1266,6 @@
         const nombre = $('nombreJugador').value.trim();
         if (nombre) localStorage.setItem(CLAVE_NOMBRE, nombre);
     });
+    cargarCatalogoHbs();
     requestAnimationFrame(bucle);
 })();

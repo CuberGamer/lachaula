@@ -231,6 +231,7 @@
                 niveles: { ...(jugador.niveles || {}) }
             }));
             copia.ball = { ...mundo.ball };
+            copia.dynamicDiscs = mundo.dynamicDiscs ? mundo.dynamicDiscs.map(d => ({ ...d })) : [];
             copia.kickEvents = [];
             copia.kickImpactEvents = [];
             copia.activePowerUps = [];
@@ -326,15 +327,21 @@
                 poderes[tipo] = 1e9;
                 niveles[tipo] = (niveles[tipo] || 0) + 1;
             });
+            const eq = equipo === 'blue' ? 'blue' : 'red';
+            const pp = mundo && mundo.mapa && mundo.mapa.hbs ? mundo.mapa.playerPhysics : null;
+            const Hbs = typeof global.FisicaHbs !== 'undefined' ? global.FisicaHbs : null;
             return {
                 id,
-                equipo: equipo === 'blue' ? 'blue' : 'red',
+                equipo: eq,
                 x, y,
                 vx: vx || 0,
                 vy: vy || 0,
                 r,
                 rBase: r,
-                invMass: Fisica.constantes.JUGADOR.invMass,
+                invMass: pp && Number.isFinite(pp.invMass) ? pp.invMass : Fisica.constantes.JUGADOR.invMass,
+                bCoef: pp && Number.isFinite(pp.bCoef) ? pp.bCoef : 0.5,
+                cGroup: Hbs ? (eq === 'blue' ? Hbs.MASK.blue : Hbs.MASK.red) : 0,
+                cMask: Hbs ? Hbs.ALL_MASK : 0,
                 pateando: !!pateando,
                 patadaUsada: !!patadaUsada,
                 activePower: tipos[0] || null,
@@ -369,6 +376,13 @@
             pelota.r = foto.b[2];
             pelota.vx = foto.b[3] || 0;
             pelota.vy = foto.b[4] || 0;
+            if (mapa && mapa.hbs && mapa.ballPhysics) {
+                pelota.invMass = mapa.ballPhysics.invMass;
+                pelota.bCoef = mapa.ballPhysics.bCoef;
+                pelota.damping = mapa.ballPhysics.damping;
+                pelota.cMask = mapa.ballPhysics.cMask;
+                pelota.cGroup = mapa.ballPhysics.cGroup;
+            }
             mundo.waitingForKickOff = foto.f === 'SAQUE';
             mundo.golEnCurso = foto.f === 'GOL';
             mundo.kickoffTeam = foto.s;

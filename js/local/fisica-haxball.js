@@ -16,6 +16,7 @@
  * match-manager.js pueda usar cualquiera de los dos.
  */
 (function (global) {
+    const Hbs = global.FisicaHbs || (typeof require === 'function' ? require('./fisica-hbs.js') : null);
     // Valores de los estadios Futsal de HaxBall ("Futsal x3/x4 by Bazinga", "Futsal 1v1"):
     // playerPhysics / ballPhysics. Comparados con el Classic: el jugador acelera más
     // (0.11 vs 0.1 → velocidad máxima 2.64 px/tick en vez de 2.4).
@@ -113,6 +114,7 @@
     }
 
     function normalizarMapa(mapa) {
+        if (mapa && mapa.hbs) return mapa;
         const width = Number(mapa && mapa.width) || 800;
         const height = Number(mapa && mapa.height) || 400;
         const goalHeight = Number(mapa && mapa.goalHeight) || 110;
@@ -169,6 +171,9 @@
 
     // `aleatorio` se puede inyectar (devuelve [0, 1) como Math.random) para tests deterministas.
     function crearEstado({ mapa, ladoIzquierdo = 'red', kickoffTeam = null, jugadores = [], powerUps = false, combinarPoderes = false, aleatorio = Math.random } = {}) {
+        if (mapa && mapa.hbs && Hbs) {
+            return Hbs.crearEstado({ mapa, ladoIzquierdo, kickoffTeam, jugadores });
+        }
         const map = normalizarMapa(mapa);
         const centroX = map.width / 2;
         const players = jugadores.map((jugador, indice) => {
@@ -788,6 +793,7 @@
 
     /** Vuelve a todos a su posición y deja la pelota en el centro esperando el saque. */
     function reiniciarSaque(estado) {
+        if (estado && estado.motor === 'hbs' && Hbs) return Hbs.reiniciarSaque(estado);
         const jugadores = estado.players.map(jugador => ({ id: jugador.id, equipo: jugador.equipo }));
         estado.players.forEach((jugador, indice) => {
             const posicion = posicionInicial(estado.mapa, estado.ladoIzquierdo, jugadores, indice);
@@ -831,6 +837,7 @@
      */
     function avanzar(estado, deltaMs, inputs = {}) {
         if (!estado || !estado.ball) return { pasos: 0, eventos: [] };
+        if (estado.motor === 'hbs' && Hbs) return Hbs.avanzar(estado, deltaMs, inputs);
         if (estado.goalResetPending) reiniciarSaque(estado);
         const eventos = [];
         estado.eventosTick = eventos;

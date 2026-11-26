@@ -170,14 +170,22 @@
 
                     <div class="online-config">
                         <section class="online-config__cancha">
-                            <h3>CANCHA</h3>
+                            <div class="online-cancha__cabecera">
+                                <h3>CANCHA</h3>
+                                <button id="btnImportarHbs" class="ssf-button online-mini" type="button" title="Importar estadio .hbs de HaxBall">Importar .hbs</button>
+                            </div>
                             <div class="online-carrusel">
                                 <button id="mapaAnterior" class="online-flecha ssf-button" type="button" aria-label="Cancha anterior">◀</button>
                                 <figure class="online-carrusel__vista">
                                     <canvas id="previewMapa"></canvas>
                                     <figcaption id="nombreMapa">—</figcaption>
+                                    <span id="categoriaMapa" class="online-categoria"></span>
                                 </figure>
                                 <button id="mapaSiguiente" class="online-flecha ssf-button" type="button" aria-label="Cancha siguiente">▶</button>
+                            </div>
+                            <div class="online-mapas__barra">
+                                <div id="filtrosMapa" class="online-filtros" role="tablist" aria-label="Categorías de canchas"></div>
+                                <input id="buscarMapa" class="online-buscar" type="search" maxlength="40" placeholder="Buscar mapa…" aria-label="Buscar mapa">
                             </div>
                             <div id="miniaturas" class="online-miniaturas" role="listbox" aria-label="Canchas"></div>
                         </section>
@@ -229,12 +237,30 @@
         </form>
     </dialog>
 
+    <dialog id="dialogoImportarHbs" class="online-dialogo online-dialogo--hbs">
+        <form id="formImportarHbs" novalidate>
+            <h2 class="ssf-title" title="Importar mapa .hbs">IMPORTAR MAPA .HBS</h2>
+            <div class="online-importar__fila">
+                <button id="btnElegirArchivoHbs" class="ssf-button online-mini" type="button">Elegir archivo .hbs</button>
+                <input id="archivoHbs" type="file" accept=".hbs,.json,.txt" aria-label="Archivo .hbs" hidden>
+                <span id="nombreArchivoHbs" class="online-importar__archivo">Ningún archivo elegido</span>
+            </div>
+            <label for="textoHbs" class="online-importar__label">O pegá el contenido JSON del archivo .hbs:</label>
+            <textarea id="textoHbs" rows="7" spellcheck="false" placeholder='{ "name": "Mi Estadio", "width": 420, "height": 200, "vertexes": [...], "segments": [...] }'></textarea>
+            <p id="errorImportarHbs" class="online-importar__error" role="alert"></p>
+            <div class="online-dialogo__botones">
+                <button id="cancelarImportarHbs" class="ssf-button ssf-button-danger" type="button">Cancelar</button>
+                <button id="confirmarImportarHbs" class="ssf-button ssf-button-primary" type="submit">Importar</button>
+            </div>
+        </form>
+    </dialog>
+
     <script src="/socket.io/socket.io.js"></script>
     <script src="../js/arcade/sonidos.js"></script>
+    <script src="../js/local/fisica-hbs.js"></script>
     <script src="../js/local/fisica-haxball.js"></script>
     <script src="../js/online/red.js"></script>
     <script src="../js/online/dibujo.js"></script>
     <script src="../js/online/cliente.js"></script>
-<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/vce701823e78c4301a35b7e07294d87301792088814092" integrity="sha512-UKNk8GbxkABxKcXYuLkO16EleLGUkcvJWtpSNmExE0Too3ZaFAxTscNWEc1OdAv5/BikHawapSCaiD2XCmp+Bw==" data-cf-beacon='{"version":"2024.11.0","token":"20520f566a3745b6b6de39ad27ee9778","r":1,"spa":2}' crossorigin="anonymous"></script>
 </body>
 </html>

@@ -28,6 +28,7 @@
     function crearDibujante(canvas) {
         const context = canvas.getContext('2d');
         let efectosVisuales = crearEfectosVisuales();
+        let cacheHbs = null;
 
         function dibujarFondoTematico(mapa, timestamp) {
             const time = timestamp * 0.001;
@@ -290,7 +291,153 @@
             return (estado && estado.mapa && estado.mapa.escala) || 1;
         }
 
+        function trazarRectRedondeado(x, y, w, h, r) {
+            const rad = Math.max(0, Math.min(r || 0, w / 2, h / 2));
+            context.beginPath();
+            if (context.roundRect) {
+                context.roundRect(x, y, w, h, rad);
+            } else {
+                context.moveTo(x + rad, y);
+                context.lineTo(x + w - rad, y);
+                context.quadraticCurveTo(x + w, y, x + w, y + rad);
+                context.lineTo(x + w, y + h - rad);
+                context.quadraticCurveTo(x + w, y + h, x + w - rad, y + h);
+                context.lineTo(x + rad, y + h);
+                context.quadraticCurveTo(x, y + h, x, y + h - rad);
+                context.lineTo(x, y + rad);
+                context.quadraticCurveTo(x, y, x + rad, y);
+                context.closePath();
+            }
+        }
+
+        function renderizarCanchaHbs(ctx, mapa) {
+            const w = mapa.width;
+            const h = mapa.height;
+            const bg = mapa.bg || {};
+            const cx = w / 2;
+            const cy = h / 2;
+
+            const outerColor = bg.type === 'hockey'
+                ? '#555555'
+                : (bg.color || '#718c5a');
+            ctx.fillStyle = outerColor;
+            ctx.fillRect(0, 0, w, h);
+
+            if (bg.width > 0 && bg.height > 0) {
+                const fx = cx - bg.width / 2;
+                const fy = cy - bg.height / 2;
+                const fw = bg.width;
+                const fh = bg.height;
+                const rad = Math.max(0, Math.min(bg.cornerRadius || 0, fw / 2, fh / 2));
+
+                ctx.save();
+                ctx.beginPath();
+                if (ctx.roundRect) ctx.roundRect(fx, fy, fw, fh, rad);
+                else ctx.rect(fx, fy, fw, fh);
+                ctx.clip();
+
+                if (bg.type === 'hockey') {
+                    ctx.fillStyle = bg.color || '#4a5058';
+                    ctx.fillRect(fx, fy, fw, fh);
+                    ctx.fillStyle = 'rgba(255, 255, 255, 0.035)';
+                    for (let x = fx; x < fx + fw; x += 64) {
+                        ctx.fillRect(x, fy, 32, fh);
+                    }
+                } else {
+                    ctx.fillStyle = bg.color || '#718c5a';
+                    ctx.fillRect(fx, fy, fw, fh);
+                    ctx.fillStyle = 'rgba(0, 0, 0, 0.055)';
+                    for (let x = fx; x < fx + fw; x += 64) {
+                        ctx.fillRect(x, fy, 32, fh);
+                    }
+                }
+
+                ctx.strokeStyle = bg.type === 'hockey' ? 'rgba(226, 232, 240, 0.45)' : '#c7e6bd';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.moveTo(cx, fy);
+                ctx.lineTo(cx, fy + fh);
+                ctx.stroke();
+
+                if (bg.kickOffRadius > 0) {
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, bg.kickOffRadius, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+
+                if (Number.isFinite(bg.goalLine) && bg.goalLine > 0) {
+                    ctx.beginPath();
+                    ctx.moveTo(cx - bg.goalLine, fy);
+                    ctx.lineTo(cx - bg.goalLine, fy + fh);
+                    ctx.moveTo(cx + bg.goalLine, fy);
+                    ctx.lineTo(cx + bg.goalLine, fy + fh);
+                    ctx.stroke();
+                }
+
+                ctx.restore();
+
+                ctx.strokeStyle = bg.type === 'hockey' ? 'rgba(226, 232, 240, 0.55)' : '#c7e6bd';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                if (ctx.roundRect) ctx.roundRect(fx, fy, fw, fh, rad);
+                else ctx.rect(fx, fy, fw, fh);
+                ctx.stroke();
+            }
+
+            (mapa.segments || []).forEach(seg => {
+                if (!seg.vis || !seg.color) return;
+                ctx.save();
+                ctx.strokeStyle = seg.color;
+                ctx.lineWidth = 3;
+                ctx.lineCap = 'round';
+                ctx.beginPath();
+                if (seg.arc) {
+                    ctx.arc(seg.arc.cx, seg.arc.cy, seg.arc.radius, seg.arc.a0, seg.arc.a1, !!seg.arc.anticlockwise);
+                } else {
+                    ctx.moveTo(seg.x0, seg.y0);
+                    ctx.lineTo(seg.x1, seg.y1);
+                }
+                ctx.stroke();
+                ctx.restore();
+            });
+
+            (mapa.discs || []).forEach(disc => {
+                if (!disc.color || disc.radius >= 2500) return;
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(disc.x, disc.y, disc.radius, 0, Math.PI * 2);
+                ctx.fillStyle = disc.color;
+                ctx.fill();
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                ctx.restore();
+            });
+        }
+
+        function dibujarCanchaHbs(estado) {
+            const mapa = estado.mapa;
+            const w = mapa.width;
+            const h = mapa.height;
+            const clave = `${mapa.id}|${w}|${h}`;
+
+            if (!cacheHbs || cacheHbs.clave !== clave) {
+                const off = document.createElement('canvas');
+                off.width = w;
+                off.height = h;
+                renderizarCanchaHbs(off.getContext('2d'), mapa);
+                cacheHbs = { clave, canvas: off };
+            }
+
+            context.clearRect(0, 0, w, h);
+            context.drawImage(cacheHbs.canvas, 0, 0);
+        }
+
         function dibujarCancha(estado) {
+            if (estado && estado.mapa && estado.mapa.hbs) {
+                dibujarCanchaHbs(estado);
+                return;
+            }
             const mapa = estado.mapa;
             const escala = escalaDe(estado);
             const field = estado.field;
@@ -346,6 +493,7 @@
         }
 
         function dibujarPostes(estado) {
+            if (estado && estado.mapa && estado.mapa.hbs) return;
             const escala = escalaDe(estado);
             estado.postes.forEach(poste => {
                 context.beginPath();
@@ -361,7 +509,7 @@
         function dibujarPelota(ball, escala = 1) {
             context.beginPath();
             context.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
-            context.fillStyle = '#f8fafc';
+            context.fillStyle = ball.color || '#f8fafc';
             context.fill();
             context.strokeStyle = '#0f172a';
             context.lineWidth = 2 * escala;
@@ -748,15 +896,45 @@
             if (celebracion) dibujarCelebracionGol(celebracion);
         }
 
-        function reiniciarEfectos() {
-            efectosVisuales = crearEfectosVisuales();
+        function dibujarMiniatura(mapa) {
+            const escala = canvas.width / Math.max(1, mapa.width);
+            context.save();
+            context.clearRect(0, 0, canvas.width, canvas.height);
+            context.scale(escala, escala);
+            const vacio = estadoVacio(mapa);
+            if (mapa.hbs) {
+                renderizarCanchaHbs(context, mapa);
+                if (vacio.ball) dibujarPelota(vacio.ball, 1);
+            } else {
+                dibujarCancha(vacio);
+                dibujarPostes(vacio);
+            }
+            context.restore();
         }
 
-        return { dibujar, reiniciarEfectos };
+        function reiniciarEfectos() {
+            efectosVisuales = crearEfectosVisuales();
+            cacheHbs = null;
+        }
+
+        return { dibujar, dibujarMiniatura, reiniciarEfectos };
     }
 
     /** Arma un estado para dibujar a partir de un mapa normalizado (sin jugadores ni pelota). */
     function estadoVacio(mapa) {
+        if (mapa && mapa.hbs) {
+            return {
+                mapa,
+                field: mapa.field,
+                goalTop: mapa.goalTop,
+                goalBottom: mapa.goalBottom,
+                postes: [],
+                players: [],
+                ball: mapa.ballPhysics ? { x: mapa.ballPhysics.x, y: mapa.ballPhysics.y, r: mapa.ballPhysics.radius, color: mapa.ballPhysics.color } : null,
+                activePowerUps: [],
+                lastPowerImpact: null
+            };
+        }
         const r = mapa.radioPoste || 5;
         return {
             mapa,
