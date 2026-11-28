@@ -6,6 +6,8 @@ const crypto = require('crypto');
 const { Server } = require('socket.io');
 const FisicaHaxball = require('./js/local/fisica-haxball.js');
 const FisicaHbs = require('./js/local/fisica-hbs.js');
+const Clubes = require('./js/online/clubes.js');
+const Puntuacion = require('./js/online/puntuacion.js');
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = '0.0.0.0';
@@ -33,10 +35,14 @@ const MODOS_VALIDOS = [
     { id: 'futsal', nombre: 'Futsal' }
 ];
 const TAMANOS_VALIDOS = [
+    ...Clubes.TAMANOS_JUGADORES,
     { id: 'chica', nombre: 'Chica', factor: 0.82 },
     { id: 'normal', nombre: 'Normal', factor: 1 },
     { id: 'grande', nombre: 'Grande', factor: 1.22 }
 ];
+const ESTADIOS_CLUBES = Clubes.ESTADIOS_CLUBES;
+const POTENCIADORES_VALIDOS = ['SUPER_KICK', 'BIG', 'SPEED'];
+const MODOS_POTENCIADORES_VALIDOS = ['aleatorio', 'determinado', 'desactivado'];
 
 const MAPAS_BASE = [
     {
@@ -183,7 +189,7 @@ function cargarCatalogoHbs() {
 
 const CATALOGO_HBS = cargarCatalogoHbs();
 
-function construirMapa(mapaId, modo = 'normal', tamano = 'normal', room = null) {
+function construirMapa(mapaId, modo = 'normal', tamano = '3v3', room = null) {
     const custom = room && Array.isArray(room.mapasCustom)
         ? room.mapasCustom.find(m => m.id === mapaId)
         : null;
@@ -192,22 +198,37 @@ function construirMapa(mapaId, modo = 'normal', tamano = 'normal', room = null) 
     const hbsMapa = CATALOGO_HBS.find(m => m.id === mapaId);
     if (hbsMapa) return hbsMapa;
 
-    const base = MAPAS_BASE.find(m => m.id === mapaId) || MAPAS_BASE[0];
-    const tamanoObj = TAMANOS_VALIDOS.find(t => t.id === tamano) || TAMANOS_VALIDOS[1];
+    const clubEstadio = ESTADIOS_CLUBES.find(m => m.id === mapaId);
+    const base = clubEstadio || MAPAS_BASE.find(m => m.id === mapaId) || ESTADIOS_CLUBES[0];
+    const tamanoObj = TAMANOS_VALIDOS.find(t => t.id === tamano) || Clubes.obtenerTamanoJugadores('3v3');
     const factor = tamanoObj.factor;
+    const baseEscala = Number.isFinite(base.escala) && base.escala > 0
+        ? base.escala
+        : Math.min(1.65, Math.max(1, Math.sqrt((base.width * base.height) / (840 * 400))));
+    const escala = Number((baseEscala * Math.min(1.32, Math.max(0.92, 0.86 + factor * 0.14))).toFixed(3));
     const normalizado = FisicaHaxball.normalizarMapa({
         ...base,
         width: Math.round(base.width * factor),
         height: Math.round(base.height * factor),
         goalHeight: Math.round(base.goalHeight * factor),
+        profundidadArco: Math.round((Number.isFinite(base.profundidadArco) ? base.profundidadArco : 45) * escala),
+        escala,
         modo: modo === 'futsal' ? 'futsal' : 'normal'
     });
-    normalizado.category = 'Original';
+    normalizado.category = clubEstadio ? 'Clubes' : 'Original';
+    normalizado.tamano = tamanoObj.id;
+    normalizado.tamanoNombre = tamanoObj.nombre;
+    if (clubEstadio) {
+        normalizado.esClub = true;
+        normalizado.club = clubEstadio.club;
+        normalizado.clubId = clubEstadio.clubId;
+    }
     normalizado.radioPoste = FisicaHaxball.constantes.POSTE.radio * normalizado.escala;
     return normalizado;
 }
 
-const MAPAS_PREVIEW = MAPAS_BASE.map(m => construirMapa(m.id, 'normal', 'normal'));
+const MAPAS_PREVIEW = MAPAS_BASE.map(m => construirMapa(m.id, 'normal', '3v3'));
+const ESTADIOS_CLUBES_PREVIEW = ESTADIOS_CLUBES.map(m => construirMapa(m.id, 'normal', '3v3'));
 
 // ========================= //
 // RUTAS HTTP Y ESTÁTICOS    //
@@ -296,7 +317,9 @@ function resumenSalaLista(room) {
 }
 
 function listaSalasPublica() {
-    return Array.from(rooms.values()).map(resumenSalaLista);
+    return Array.from(rooms.values())
+        .filter(room => !room.privada)
+        .map(resumenSalaLista);
 }
 
 function emitirListaSalas() {
@@ -308,6 +331,7 @@ function estadoSalaPublico(room) {
         id: room.id,
         nombre: room.nombre,
         conClave: !!room.clave,
+        privada: !!room.privada,
         maxPorEquipo: room.maxJugadores > 0 ? Math.floor(room.maxJugadores / 2) : 0,
         jugadores: room.jugadores.map(j => ({
             id: j.id,
@@ -321,12 +345,18 @@ function estadoSalaPublico(room) {
         tiempos: TIEMPOS_VALIDOS,
         golesValidos: GOLES_VALIDOS,
         modos: MODOS_VALIDOS,
-        tamanos: TAMANOS_VALIDOS.map(({ id, nombre }) => ({ id, nombre })),
-        config: { ...room.config },
+        tamanos: Clubes.TAMANOS_JUGADORES.map(({ id, etiqueta, nombre }) => ({ id, etiqueta, nombre })),
+        config: {
+            ...room.config,
+            potenciadoresActivos: [...(room.config.potenciadoresActivos || POTENCIADORES_VALIDOS)],
+            clubes: { ...(room.config.clubes || { red: 'boca', blue: 'river' }) }
+        },
         mapa: room.mapa,
         partido: room.partido ? {
             pausado: !!room.partido.pausado,
-            marcador: { ...room.partido.marcador }
+            practica: !!room.partido.practica,
+            marcador: { ...room.partido.marcador },
+            goles: room.partido.goles.slice()
         } : null,
         ultimoResultado: room.ultimoResultado
     };
@@ -363,21 +393,35 @@ function equipoAutomatico(room) {
 // SIMULACIÓN DE PARTIDOS    //
 // ========================= //
 
-function iniciarPartido(room) {
-    if (room.partido) return { error: 'Ya hay un partido en curso.' };
+function iniciarPartido(room, opciones = {}) {
+    const esPractica = !!(opciones && opciones.practica);
+    if (room.partido && !(room.partido.practica && !esPractica)) {
+        return { error: 'Ya hay un partido en curso.' };
+    }
     const enCancha = room.jugadores.filter(j => j.equipo === 'red' || j.equipo === 'blue');
     if (!enCancha.length) {
         return { error: 'Tiene que haber al menos un jugador en Rojo o Azul.' };
     }
+    if (room.partido && room.partido.practica && !esPractica) {
+        if (room.partido.intervalId) {
+            clearInterval(room.partido.intervalId);
+            room.partido.intervalId = null;
+        }
+        room.partido = null;
+    }
 
     const esHbs = !!(room.mapa && room.mapa.hbs);
+    const modoPot = room.config.potenciadoresModo || (room.config.powerUps ? 'aleatorio' : 'desactivado');
+    const activosPot = Array.isArray(room.config.potenciadoresActivos) ? room.config.potenciadoresActivos : POTENCIADORES_VALIDOS;
     const kickoffTeam = enCancha.some(j => j.equipo === 'red') ? 'red' : 'blue';
     const fisica = FisicaHaxball.crearEstado({
         mapa: room.mapa,
         ladoIzquierdo: 'red',
         kickoffTeam,
         jugadores: enCancha.map(j => ({ id: j.id, equipo: j.equipo })),
-        powerUps: esHbs ? false : !!room.config.powerUps,
+        powerUps: esHbs ? false : modoPot !== 'desactivado',
+        potenciadoresModo: esHbs ? 'desactivado' : modoPot,
+        potenciadoresActivos: activosPot,
         combinarPoderes: esHbs ? false : !!room.config.combinarPoderes
     });
 
@@ -389,6 +433,7 @@ function iniciarPartido(room) {
     room.partido = {
         tick: 0,
         pausado: false,
+        practica: esPractica,
         fase: 'SAQUE',
         servingTeam: kickoffTeam,
         overtime: false,
@@ -398,13 +443,15 @@ function iniciarPartido(room) {
         golTranscurridoMs: 0,
         restanteMs: (room.config.tiempoMin || 5) * 60 * 1000,
         overtimeMs: 0,
+        elapsedMs: 0,
         fisica,
         inputs,
+        puntuacion: Puntuacion.crearMotorPuntuacion(enCancha),
         ultimoTickAt: Date.now(),
         intervalId: null
     };
 
-    io.to(room.id).emit('partido:inicio', { mapa: room.mapa });
+    io.to(room.id).emit('partido:inicio', { mapa: room.mapa, practica: esPractica });
     emitirEstadoSala(room);
     emitirListaSalas();
     emitirFotoPartido(room);
@@ -422,13 +469,24 @@ function detenerPartido(room, porFin = false, ganador = null) {
     }
     const marcador = { ...partido.marcador };
     const goles = partido.goles.slice();
+    const puntuacion = partido.puntuacion ? partido.puntuacion.obtenerResumen(room.jugadores) : null;
     room.partido = null;
 
     if (porFin) {
-        room.ultimoResultado = { ganador, marcador, goles };
-        io.to(room.id).emit('partido:fin', { ganador, marcador });
+        room.ultimoResultado = { ganador, marcador, goles, puntuacion };
+        io.to(room.id).emit('partido:fin', { ganador, marcador, puntuacion });
     } else {
-        io.to(room.id).emit('partido:detenido');
+        if (puntuacion && puntuacion.jugadores.some(j => j.puntos > 0)) {
+            room.ultimoResultado = {
+                ganador: null,
+                practica: !!partido.practica,
+                detenido: !partido.practica,
+                marcador,
+                goles,
+                puntuacion
+            };
+        }
+        io.to(room.id).emit('partido:detenido', { puntuacion });
     }
     emitirEstadoSala(room);
     emitirListaSalas();
@@ -451,10 +509,11 @@ function emitirFotoPartido(room) {
     const foto = {
         n: partido.tick,
         p: !!partido.pausado,
+        pr: partido.practica ? 1 : 0,
         f: partido.fase,
         s: partido.servingTeam,
         x: !!partido.overtime,
-        t: partido.overtime ? partido.overtimeMs : partido.restanteMs,
+        t: partido.practica ? partido.elapsedMs : (partido.overtime ? partido.overtimeMs : partido.restanteMs),
         m: [partido.marcador.red, partido.marcador.blue],
         b: [f.ball.x, f.ball.y, f.ball.r, f.ball.vx, f.ball.vy],
         u: (f.activePowerUps || []).map(p => [p.x, p.y, p.type, p.r]),
@@ -513,6 +572,38 @@ function procesarTickPartido(room) {
     f.restoMs = 0;
     const { eventos } = FisicaHaxball.avanzar(f, MS_TICK, inputsObj);
 
+    if (f.touchEvents && f.touchEvents.length > 0 && partido.puntuacion) {
+        const campo = f.field ? {
+            left: f.field.left,
+            right: f.field.right,
+            goalTop: f.goalTop,
+            goalBottom: f.goalBottom
+        } : null;
+        f.touchEvents.forEach(ev => {
+            const autor = room.jugadores.find(j => j.id === (ev.player && ev.player.id));
+            if (!autor) return;
+            partido.puntuacion.registrarToque(autor, partido.tick, {
+                esPrimerToqueSaque: !!ev.esPrimerToque,
+                superTiro: !!ev.superTiro
+            });
+            const notifs = partido.puntuacion.evaluarIntervencion({
+                jugador: autor,
+                tickActual: partido.tick,
+                pelotaAntes: ev.pelotaAntes,
+                pelotaDespues: ev.pelotaDespues,
+                campo,
+                fuePatada: !!ev.fuePatada,
+                superTiro: !!ev.superTiro
+            });
+            notifs.forEach(n => {
+                if (n.tipo === 'atajada' || n.tipo === 'tiro') {
+                    io.to(room.id).emit('partido:notificacion', n);
+                }
+            });
+        });
+        f.touchEvents.length = 0;
+    }
+
     if (f.kickImpactEvents && f.kickImpactEvents.length > 0) {
         io.to(room.id).emit('partido:evento', { tipo: 'patada' });
     }
@@ -524,16 +615,35 @@ function procesarTickPartido(room) {
         partido.marcador[equipoGol] += 1;
         const autorObj = room.jugadores.find(j => j.id === f.lastTouch);
         const enContra = !!(autorObj && autorObj.equipo !== equipoGol);
+        const fueGolazo = !enContra && !!f.lastTouchSuperKick;
+        const duracionBaseMs = (room.config.tiempoMin || 5) * 60 * 1000;
+        const transcurridoMs = partido.practica
+            ? (partido.elapsedMs || 0)
+            : (Math.max(0, duracionBaseMs - partido.restanteMs) + (partido.overtime ? partido.overtimeMs : 0));
+        const minuto = Math.max(1, Math.floor(transcurridoMs / 60000) + 1);
         const golInfo = {
             equipo: equipoGol,
             autor: autorObj ? autorObj.nombre : null,
-            enContra
+            minuto,
+            extra: !!partido.overtime,
+            enContra,
+            golazo: fueGolazo
         };
         partido.goles.push(golInfo);
         partido.ultimoGol = golInfo;
         partido.golTranscurridoMs = 0;
         partido.fase = 'GOL';
-        io.to(room.id).emit('partido:evento', { tipo: 'gol' });
+        io.to(room.id).emit('partido:evento', { tipo: 'gol', golazo: fueGolazo });
+        if (partido.puntuacion) {
+            const notifsGol = partido.puntuacion.registrarGol({
+                equipoGol,
+                autorJugador: autorObj,
+                jugadoresSala: room.jugadores,
+                tickActual: partido.tick,
+                superTiro: fueGolazo
+            });
+            notifsGol.forEach(n => io.to(room.id).emit('partido:notificacion', n));
+        }
         emitirEstadoSala(room);
     }
 
@@ -541,10 +651,10 @@ function procesarTickPartido(room) {
         partido.golTranscurridoMs += MS_TICK;
         if (partido.golTranscurridoMs >= DURACION_GOL_MS) {
             const limiteGoles = Number(room.config.goles) || 0;
-            const ganadorPorGoles = limiteGoles > 0
+            const ganadorPorGoles = !partido.practica && limiteGoles > 0
                 ? (partido.marcador.red >= limiteGoles ? 'red' : (partido.marcador.blue >= limiteGoles ? 'blue' : null))
                 : null;
-            if (ganadorPorGoles || partido.overtime) {
+            if (!partido.practica && (ganadorPorGoles || partido.overtime)) {
                 const ganador = partido.marcador.red > partido.marcador.blue
                     ? 'red'
                     : (partido.marcador.blue > partido.marcador.red ? 'blue' : null);
@@ -556,11 +666,17 @@ function procesarTickPartido(room) {
             partido.servingTeam = equipoSaca;
             f.kickoffTeam = equipoSaca;
             FisicaHaxball.reiniciarSaque(f);
+            if (partido.puntuacion) partido.puntuacion.limpiarHistorialSaque();
             partido.fase = 'SAQUE';
             partido.ultimoGol = null;
             partido.golTranscurridoMs = 0;
             io.to(room.id).emit('partido:evento', { tipo: 'saque' });
         }
+    } else if (partido.practica) {
+        if (f.timerStarted) {
+            partido.elapsedMs += MS_TICK;
+        }
+        partido.fase = f.waitingForKickOff ? 'SAQUE' : 'PRACTICA';
     } else {
         if (f.timerStarted && !partido.overtime) {
             partido.restanteMs = Math.max(0, partido.restanteMs - MS_TICK);
@@ -760,20 +876,27 @@ io.on('connection', (socket) => {
         };
 
         const config = {
-            mapaId: 'classic',
+            mapaId: 'estadio_bombonera',
             modo: 'normal',
-            tamano: 'normal',
+            tamano: '3v3',
             tiempoMin: 5,
             goles: 3,
             powerUps: true,
+            potenciadoresModo: 'aleatorio',
+            potenciadoresActivos: [...POTENCIADORES_VALIDOS],
             combinarPoderes: false,
-            equiposBloqueados: false
+            equiposBloqueados: false,
+            clubes: {
+                red: 'boca',
+                blue: 'river'
+            }
         };
 
         const room = {
             id: salaId,
             nombre: nombreSala,
             clave,
+            privada: !!data.privada,
             maxJugadores,
             jugadores: [jugador],
             config,
@@ -795,6 +918,7 @@ io.on('connection', (socket) => {
                 tuId: playerId,
                 token,
                 mapas: MAPAS_PREVIEW,
+                estadiosClubes: ESTADIOS_CLUBES_PREVIEW,
                 mapasCustom: room.mapasCustom,
                 sala: estadoSalaPublico(room),
                 reconectado: false
@@ -831,6 +955,7 @@ io.on('connection', (socket) => {
                         tuId: existente.id,
                         token: existente.token,
                         mapas: MAPAS_PREVIEW,
+                        estadiosClubes: ESTADIOS_CLUBES_PREVIEW,
                         mapasCustom: room.mapasCustom || [],
                         sala: estadoSalaPublico(room),
                         reconectado: true
@@ -887,6 +1012,7 @@ io.on('connection', (socket) => {
                 tuId: playerId,
                 token,
                 mapas: MAPAS_PREVIEW,
+                estadiosClubes: ESTADIOS_CLUBES_PREVIEW,
                 mapasCustom: room.mapasCustom || [],
                 sala: estadoSalaPublico(room),
                 reconectado: false
@@ -967,8 +1093,24 @@ io.on('connection', (socket) => {
         if (data.equiposBloqueados !== undefined) {
             room.config.equiposBloqueados = !!data.equiposBloqueados;
         }
+        if (data.privada !== undefined) {
+            room.privada = !!data.privada;
+        }
+        if (typeof data.clave === 'string') {
+            room.clave = data.clave.trim().slice(0, 20);
+        }
+        if (data.clubes && typeof data.clubes === 'object') {
+            if (!room.config.clubes) room.config.clubes = { red: 'boca', blue: 'river' };
+            if (data.clubes.red && Clubes.CLUBES.some(c => c.id === data.clubes.red)) {
+                room.config.clubes.red = data.clubes.red;
+            }
+            if (data.clubes.blue && Clubes.CLUBES.some(c => c.id === data.clubes.blue)) {
+                room.config.clubes.blue = data.clubes.blue;
+            }
+        }
         if (!room.partido) {
             const mapaValido = data.mapaId && (
+                ESTADIOS_CLUBES.some(m => m.id === data.mapaId) ||
                 MAPAS_BASE.some(m => m.id === data.mapaId) ||
                 CATALOGO_HBS.some(m => m.id === data.mapaId) ||
                 (room.mapasCustom && room.mapasCustom.some(m => m.id === data.mapaId))
@@ -978,7 +1120,16 @@ io.on('connection', (socket) => {
             if (data.tamano && TAMANOS_VALIDOS.some(t => t.id === data.tamano)) room.config.tamano = data.tamano;
             if (TIEMPOS_VALIDOS.includes(Number(data.tiempoMin))) room.config.tiempoMin = Number(data.tiempoMin);
             if (GOLES_VALIDOS.includes(Number(data.goles))) room.config.goles = Number(data.goles);
-            if (data.powerUps !== undefined) room.config.powerUps = !!data.powerUps;
+            if (Array.isArray(data.potenciadoresActivos)) {
+                room.config.potenciadoresActivos = data.potenciadoresActivos.filter(p => POTENCIADORES_VALIDOS.includes(p));
+            }
+            if (data.potenciadoresModo && MODOS_POTENCIADORES_VALIDOS.includes(data.potenciadoresModo)) {
+                room.config.potenciadoresModo = data.potenciadoresModo;
+                room.config.powerUps = data.potenciadoresModo !== 'desactivado';
+            } else if (data.powerUps !== undefined) {
+                room.config.powerUps = !!data.powerUps;
+                room.config.potenciadoresModo = room.config.powerUps ? 'aleatorio' : 'desactivado';
+            }
             if (data.combinarPoderes !== undefined) room.config.combinarPoderes = !!data.combinarPoderes;
             room.mapa = construirMapa(room.config.mapaId, room.config.modo, room.config.tamano, room);
         }
@@ -1076,10 +1227,10 @@ io.on('connection', (socket) => {
         emitirEstadoSala(ctx.room);
     });
 
-    socket.on('partido:iniciar', (_data, cb) => {
+    socket.on('partido:iniciar', (data = {}, cb) => {
         const ctx = obtenerContexto();
         if (!ctx || !ctx.jugador.admin) return typeof cb === 'function' && cb({ error: 'Solo el admin puede iniciar el partido.' });
-        const res = iniciarPartido(ctx.room);
+        const res = iniciarPartido(ctx.room, { practica: !!(data && data.practica) });
         if (typeof cb === 'function') cb(res);
     });
 

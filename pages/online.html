@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>La Chaula | Online</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="../css/global.css">
     <link rel="stylesheet" href="../css/crear-sala.css">
     <link rel="stylesheet" href="../css/ssf-theme.css">
@@ -43,7 +46,7 @@
                     <input id="nombreJugador" type="text" maxlength="16" autocomplete="nickname" placeholder="Ej: Facu">
                 </div>
                 <div class="form-group">
-                    <label for="avatarJugador" title="Lo que se ve dentro de tu círculo (vacío = tu número)">Avatar (máx. 2 caracteres)</label>
+                    <label for="avatarJugador" title="Lo que se ve dentro de tu círculo (vacío = tu número)">Número / Emoji</label>
                     <input id="avatarJugador" class="online-avatar__input" type="text" maxlength="16" autocomplete="off" placeholder="10">
                 </div>
 
@@ -108,107 +111,284 @@
     <!-- ========================= -->
 
     <main id="vistaSala" class="online-sala" hidden>
+        <button id="salirSala" class="ssf-button ssf-button-danger online-exit-btn online-exit-btn--top" type="button" aria-label="Salir de la sala">Exit</button>
         <section class="online-juego">
-            <section class="local-hud online-hud" aria-label="Marcador del partido" aria-live="polite">
-                <div class="local-team local-team--red">
-                    <span>ROJO</span>
-                    <strong id="golesRojo">0</strong>
+            <section class="broadcast-hud" aria-label="Marcador del partido" aria-live="polite">
+                <div class="broadcast-main">
+                    <div class="broadcast-bar">
+                        <div class="broadcast-team broadcast-team--red">
+                            <img id="hudEscudoRojo" class="broadcast-crest" alt="Escudo equipo rojo">
+                            <span id="hudNombreRojo" class="broadcast-name">BOCA JUNIORS</span>
+                            <strong id="golesRojo" class="broadcast-score">0</strong>
+                        </div>
+                        <div class="broadcast-clock">
+                            <span id="reloj">--:--</span>
+                            <span id="faseTexto" class="online-fase">ESPERANDO</span>
+                        </div>
+                        <div class="broadcast-team broadcast-team--blue">
+                            <strong id="golesAzul" class="broadcast-score">0</strong>
+                            <span id="hudNombreAzul" class="broadcast-name">RIVER PLATE</span>
+                            <img id="hudEscudoAzul" class="broadcast-crest" alt="Escudo equipo azul">
+                        </div>
+                    </div>
+                    <div class="broadcast-scorers" id="hudGolesResumen" hidden>
+                        <span id="hudGolesListaRojo" class="broadcast-scorers__side broadcast-scorers__side--red"></span>
+                        <span class="broadcast-scorers__ball" aria-hidden="true">⚽</span>
+                        <span id="hudGolesListaAzul" class="broadcast-scorers__side broadcast-scorers__side--blue"></span>
+                    </div>
                 </div>
-                <div class="local-clock-panel">
-                    <span id="reloj">--:--</span>
-                    <span id="faseTexto" class="online-fase"></span>
+                <div class="broadcast-actions">
+                    <div class="hud-match-group" id="hudMatchGroup">
+                        <button id="hudBtnPausa" class="hud-action-btn" type="button" title="Pausar o reanudar partido (P)" disabled>Pausa</button>
+                        <button id="hudBtnDetener" class="hud-action-btn hud-action-btn--danger" type="button" title="Detener partido" disabled>Detener</button>
+                    </div>
+                    <button id="botonPanel" class="local-button" type="button" title="Mostrar u ocultar el menú de sala o pausa (Esc)">Sala (Esc)</button>
                 </div>
-                <div class="local-team local-team--blue">
-                    <span>AZUL</span>
-                    <strong id="golesAzul">0</strong>
-                </div>
-                <button id="botonPanel" class="local-button" type="button" title="Mostrar u ocultar la sala (Esc)">Sala (Esc)</button>
             </section>
 
             <div class="local-board online-cancha">
-                <canvas id="cancha"></canvas>
+                <canvas id="cancha" data-testid="cancha-canvas"></canvas>
+                <canvas id="minimapa" class="fifa-minimapa" width="240" height="114" data-testid="fifa-minimapa" hidden aria-label="Minimapa táctico"></canvas>
 
-                <div id="panelSala" class="online-panel">
-                    <div class="online-panel__cabecera">
-                        <div>
+                <!-- Notificaciones de jugadas y puntuación en vivo -->
+                <div id="notificacionesPartido" class="online-notificaciones" aria-live="polite"></div>
+
+                <div id="panelSala" class="online-panel online-panel--tabs">
+                    <header class="online-panel__topbar">
+                        <div class="online-panel__roommeta">
                             <h2 id="tituloSala">Sala</h2>
-                            <p>Código <strong id="codigoActual">-----</strong>
+                            <nav class="online-bottom-dock fifa-top-nav" role="tablist" aria-label="Secciones de la sala">
+                                <button id="navTabEstadios" class="dock-tab" type="button" role="tab" data-tab="estadios" aria-selected="false" aria-label="Estadios y canchas" title="Estadios y canchas">Estadios</button>
+                                <button id="navTabSala" class="dock-tab dock-tab--activo" type="button" role="tab" data-tab="sala" aria-selected="true" aria-label="Sala, equipos y play" title="Sala y equipos">Plantilla</button>
+                                <button id="navTabConfig" class="dock-tab" type="button" role="tab" data-tab="config" aria-selected="false" aria-label="Configuraciones" title="Configuraciones">Ajustes</button>
+                            </nav>
+                            <p class="online-panel__code">
+                                <span>Código</span>
+                                <strong id="codigoActual">-----</strong>
                                 <button id="copiarLink" class="online-mini" type="button">Copiar link</button>
                                 <span id="candado" hidden>🔒</span>
                             </p>
-                            <p class="online-avatar">
-                                <label for="avatarSala" title="Lo que se ve dentro de tu círculo (vacío = tu número). También: /avatar XX en el chat">Tu avatar</label>
-                                <input id="avatarSala" class="online-avatar__input" type="text" maxlength="16" autocomplete="off" placeholder="10">
-                            </p>
-                            <p class="online-avatar">
-                                <label for="cfgZoom" title="También con las teclas 0 a 7 durante el partido">Zoom</label>
-                                <select id="cfgZoom"></select>
-                                <label for="cfgExtrapolacion" title="Como en HaxBall: adelanta lo que ves para compensar el ping (también: /extrapolation 50 en el chat)">Extrapolación (ms)</label>
-                                <input id="cfgExtrapolacion" class="online-avatar__input" type="number" min="0" max="200" step="10" value="0">
-                            </p>
                         </div>
-                        <button id="salirSala" class="ssf-button ssf-button-danger" type="button">Salir de la sala</button>
-                    </div>
+                    </header>
 
-                    <div class="online-equipos">
-                        <section class="online-equipo online-equipo--red" data-equipo="red">
-                            <h3>ROJO <span data-cuenta></span></h3>
-                            <ul data-lista></ul>
-                            <button class="online-unirme" data-unirme="red" type="button">Unirme</button>
-                        </section>
-                        <section class="online-equipo online-equipo--spec" data-equipo="">
-                            <h3>ESPECTADORES <span data-cuenta></span></h3>
-                            <ul data-lista></ul>
-                            <button class="online-unirme" data-unirme="" type="button">Unirme</button>
-                        </section>
-                        <section class="online-equipo online-equipo--blue" data-equipo="blue">
-                            <h3>AZUL <span data-cuenta></span></h3>
-                            <ul data-lista></ul>
-                            <button class="online-unirme" data-unirme="blue" type="button">Unirme</button>
-                        </section>
-                    </div>
+                    <!-- ========================= -->
+                    <!-- PESTAÑA 1: ESTADIOS       -->
+                    <!-- ========================= -->
+                    <section id="tabEstadios" class="online-tabpane online-tabpane--estadios" role="tabpanel" aria-label="Estadios" hidden>
+                        <div class="estadios-layout">
+                            <div class="estadios-ruleta-col">
+                                <div class="estadios-ruleta" aria-label="Ruleta de estadios de clubes">
+                                    <button id="mapaAnterior" class="estadio-slot estadio-slot--sec" type="button" aria-label="Estadio anterior">
+                                        <canvas id="previewMapaPrev"></canvas>
+                                        <span class="estadio-flecha" aria-hidden="true">▲</span>
+                                    </button>
+                                    <figure class="estadio-slot estadio-slot--main">
+                                        <div class="estadio-slot-stage" id="previewStage">
+                                            <canvas id="previewMapa"></canvas>
+                                        </div>
+                                        <figcaption id="nombreMapa">—</figcaption>
+                                        <span id="categoriaMapa" class="online-categoria"></span>
+                                    </figure>
+                                    <button id="mapaSiguiente" class="estadio-slot estadio-slot--sec" type="button" aria-label="Estadio siguiente">
+                                        <canvas id="previewMapaNext"></canvas>
+                                        <span class="estadio-flecha" aria-hidden="true">▼</span>
+                                    </button>
+                                </div>
+                                <div class="estadios-ruleta-acciones">
+                                    <button id="btnImportarHbs" class="ssf-button online-importar-btn" type="button" title="Importar estadio .hbs de HaxBall">Importar mapa</button>
+                                    <button id="btnVolverClubes" class="online-mini" type="button" hidden>Volver a clubes</button>
+                                </div>
+                            </div>
 
-                    <div class="online-config">
-                        <section class="online-config__cancha">
-                            <div class="online-cancha__cabecera">
-                                <h3>CANCHA</h3>
-                                <button id="btnImportarHbs" class="ssf-button online-mini" type="button" title="Importar estadio .hbs de HaxBall">Importar .hbs</button>
-                            </div>
-                            <div class="online-carrusel">
-                                <button id="mapaAnterior" class="online-flecha ssf-button" type="button" aria-label="Cancha anterior">◀</button>
-                                <figure class="online-carrusel__vista">
-                                    <canvas id="previewMapa"></canvas>
-                                    <figcaption id="nombreMapa">—</figcaption>
-                                    <span id="categoriaMapa" class="online-categoria"></span>
-                                </figure>
-                                <button id="mapaSiguiente" class="online-flecha ssf-button" type="button" aria-label="Cancha siguiente">▶</button>
-                            </div>
-                            <div class="online-mapas__barra">
+                            <div class="estadios-catalogo-col">
+                                <div class="estadios-buscador-wrap">
+                                    <span class="estadios-lupa" aria-hidden="true">🔍</span>
+                                    <input id="buscarMapa" class="online-buscar estadios-buscar" type="search" maxlength="40" placeholder="Buscar cancha..." aria-label="Buscar mapa">
+                                </div>
+                                <div id="tamanosJugadores" class="estadios-tamanos" role="group" aria-label="Tamaño del estadio por cantidad de jugadores"></div>
                                 <div id="filtrosMapa" class="online-filtros" role="tablist" aria-label="Categorías de canchas"></div>
-                                <input id="buscarMapa" class="online-buscar" type="search" maxlength="40" placeholder="Buscar mapa…" aria-label="Buscar mapa">
+                                <div id="miniaturas" class="online-miniaturas estadios-grid" role="listbox" aria-label="Canchas del catálogo"></div>
                             </div>
-                            <div id="miniaturas" class="online-miniaturas" role="listbox" aria-label="Canchas"></div>
-                        </section>
+                        </div>
+                    </section>
 
-                        <section id="controlesAdmin" class="online-config__reglas">
-                            <h3>PARTIDO</h3>
-                            <div class="form-group"><label for="cfgModo" title="Futsal: pelota más chica, rápida y rebotona">Modo</label><select id="cfgModo"></select></div>
-                            <div class="form-group"><label for="cfgTamano" title="Tamaño de la cancha">Tamaño de cancha</label><select id="cfgTamano"></select></div>
-                            <div class="form-group"><label for="cfgTiempo">Tiempo</label><select id="cfgTiempo"></select></div>
-                            <div class="form-group"><label for="cfgGoles" title="Límite de goles">Limite de goles</label><select id="cfgGoles"></select></div>
-                            <label class="online-check"><input id="cfgPowerUps" type="checkbox"> Power-ups (rayo, escudo y súper tiro)</label>
-                            <label class="online-check" title="Agarrar un poder nuevo se suma a los que ya tenés en vez de reemplazarlos"><input id="cfgCombinar" type="checkbox"> Combinar poderes (varios a la vez)</label>
-                            <label class="online-check"><input id="cfgBloqueo" type="checkbox"> Solo el admin arma equipos</label>
-                            <div class="online-admin__botones">
-                                <button id="mezclar" class="ssf-button" type="button">Mezclar equipos</button>
-                                <button id="pausa" class="ssf-button" type="button">Pausa (P)</button>
-                                <button id="iniciarDetener" class="ssf-button ssf-button-primary" type="button">Iniciar partido</button>
+                    <!-- ========================= -->
+                    <!-- PESTAÑA 2: SALA / PLAY    -->
+                    <!-- ========================= -->
+                    <section id="tabSala" class="online-tabpane online-tabpane--sala" role="tabpanel" aria-label="Sala y equipos">
+                        <div class="online-equipos online-equipos--lobby">
+                            <section class="online-equipo online-equipo--red" data-equipo="red">
+                                <h3>ROJO <span data-cuenta></span></h3>
+                                <ul data-lista></ul>
+                                <button class="online-unirme" data-unirme="red" type="button">Unirme</button>
+                            </section>
+                            <section class="online-equipo online-equipo--spec" data-equipo="">
+                                <h3>ESPECTADORES <span data-cuenta></span></h3>
+                                <ul data-lista></ul>
+                                <button class="online-unirme" data-unirme="" type="button">Unirme</button>
+                            </section>
+                            <section class="online-equipo online-equipo--blue" data-equipo="blue">
+                                <h3>AZUL <span data-cuenta></span></h3>
+                                <ul data-lista></ul>
+                                <button class="online-unirme" data-unirme="blue" type="button">Unirme</button>
+                            </section>
+                        </div>
+
+                        <div class="lobby-bottom-grid">
+                            <article class="lobby-score-card lobby-score-card--red" aria-label="Puntuación equipo rojo">
+                                <h3>Puntuación equipo rojo</h3>
+                                <div id="puntuacionRojo" class="lobby-score-list">
+                                    <p class="lobby-score-empty">Sin partido anterior todavía.</p>
+                                </div>
+                            </article>
+
+                            <div class="lobby-center-actions">
+                                <div class="lobby-play-row">
+                                    <button id="iniciarDetener" class="ssf-button ssf-button-primary lobby-play-btn" type="button" data-start="true">PLAY</button>
+                                    <button id="btnPractica" class="ssf-button lobby-practice-btn" type="button" title="Entrar a practicar libremente en el estadio elegido">PRÁCTICA</button>
+                                </div>
+                                <div class="lobby-matchup-bar">
+                                    <button id="btnEscudoRojo" class="club-shield-btn" type="button" aria-label="Elegir club equipo rojo" title="Elegir club equipo rojo">
+                                        <img id="imgEscudoRojo" alt="Escudo equipo rojo">
+                                        <span id="siglaEscudoRojo" class="club-shield-sigla">BOC</span>
+                                    </button>
+                                    <div class="lobby-matchup-score">
+                                        <span id="lobbyGolesRojo">0</span>
+                                        <span class="lobby-matchup-sep">-</span>
+                                        <span id="lobbyGolesAzul">0</span>
+                                    </div>
+                                    <button id="btnEscudoAzul" class="club-shield-btn" type="button" aria-label="Elegir club equipo azul" title="Elegir club equipo azul">
+                                        <img id="imgEscudoAzul" alt="Escudo equipo azul">
+                                        <span id="siglaEscudoAzul" class="club-shield-sigla">RIV</span>
+                                    </button>
+                                </div>
                             </div>
-                        </section>
-                    </div>
-                    <p id="infoNoAdmin" class="online-nota" hidden>El admin elige los equipos y arranca el partido.</p>
-                    <p id="ultimoResultado" class="online-nota" hidden></p>
-                    <p class="online-nota online-nota--teclas">Moverse: flechas o WASD · Patear: Espacio o X · Chat: Enter · Panel: Esc</p>
+
+                            <article class="lobby-score-card lobby-score-card--blue" aria-label="Puntuación equipo azul">
+                                <h3>Puntuación equipo azul</h3>
+                                <div id="puntuacionAzul" class="lobby-score-list">
+                                    <p class="lobby-score-empty">Sin partido anterior todavía.</p>
+                                </div>
+                            </article>
+                        </div>
+                        <p id="infoNoAdmin" class="online-nota" hidden>El admin elige los equipos, el estadio y arranca el partido.</p>
+                    </section>
+
+                    <!-- ========================= -->
+                    <!-- PESTAÑA 3: CONFIGURACIONES -->
+                    <!-- ========================= -->
+                    <section id="tabConfig" class="online-tabpane online-tabpane--config" role="tabpanel" aria-label="Configuraciones" hidden>
+                        <div class="config-two-cards">
+                            <article id="controlesAdmin" class="config-card">
+                                <div class="config-card-top">
+                                    <div class="powerups-picker" role="group" aria-label="Seleccionar potenciadores activos">
+                                        <button id="puBtnSuperKick" class="powerup-icon-btn powerup-icon-btn--glove" type="button" data-powerup="SUPER_KICK" aria-pressed="true" aria-label="Potenciador Súper Tiro" title="Súper tiro (Guante)">
+                                            <svg viewBox="0 0 32 32" width="30" height="30" aria-hidden="true">
+                                                <path d="M11 8 C8 8 6 10.5 6 14 L6 18 C6 21 8.5 23 12 23 L21 23 C24 23 26 21 26 17.5 L26 13 C26 9.5 23.5 7 19.5 7 L14 7 C12 7 11 8 11 8 Z" fill="#b91c1c" stroke="#450a0a" stroke-width="2" stroke-linejoin="round"/>
+                                                <path d="M9 12 C7.5 12 6.5 13.5 6.5 15.5 C6.5 17.5 8 18.5 10.5 18.5" fill="none" stroke="#450a0a" stroke-width="2" stroke-linecap="round"/>
+                                                <rect x="10" y="23" width="12" height="4" rx="1.5" fill="#fecaca" stroke="#450a0a" stroke-width="1.8"/>
+                                            </svg>
+                                        </button>
+                                        <button id="puBtnBig" class="powerup-icon-btn powerup-icon-btn--shield" type="button" data-powerup="BIG" aria-pressed="true" aria-label="Potenciador Escudo" title="Escudo">
+                                            <svg viewBox="0 0 32 32" width="28" height="28" aria-hidden="true">
+                                                <path d="M16 4 L26 8 L26 16 C26 22.5 16 28 16 28 C16 28 6 22.5 6 16 L6 8 Z" fill="#2563eb" stroke="#0f172a" stroke-width="2.2" stroke-linejoin="round"/>
+                                                <path d="M16 7 L23 10 L23 16 C23 20.5 16 24.8 16 24.8 Z" fill="#60a5fa" opacity="0.45"/>
+                                            </svg>
+                                        </button>
+                                        <button id="puBtnSpeed" class="powerup-icon-btn powerup-icon-btn--bolt" type="button" data-powerup="SPEED" aria-pressed="true" aria-label="Potenciador Rapidez" title="Rapidez (Rayo)">
+                                            <svg viewBox="0 0 32 32" width="28" height="28" aria-hidden="true">
+                                                <polygon points="18,3 8,17 15,17 13,29 24,14 17,14" fill="#fef08a" stroke="#78350f" stroke-width="2.2" stroke-linejoin="round"/>
+                                            </svg>
+                                        </button>
+                                    </div>
+                                    <div class="config-mode-group">
+                                        <span class="config-mode-label">Aparición de potenciadores</span>
+                                        <div id="cfgModoPotenciadores" class="powerup-mode-switch" role="group" aria-label="Modo de potenciadores">
+                                            <button type="button" class="mode-pill" data-pumode="aleatorio">Aleatorio</button>
+                                            <button type="button" class="mode-pill" data-pumode="determinado">Determinado</button>
+                                            <button type="button" class="mode-pill" data-pumode="desactivado">Desactivado</button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="config-inner-box">
+                                    <h3>Configuraciones de partida</h3>
+                                    <div class="config-fields-grid">
+                                        <div class="form-group">
+                                            <label for="cfgModo" title="Futsal: pelota más chica, rápida y rebotona">Modo de juego</label>
+                                            <select id="cfgModo"></select>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="cfgTiempo">Tiempo</label>
+                                            <select id="cfgTiempo"></select>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="cfgGoles" title="Límite de goles">Límite de goles</label>
+                                            <select id="cfgGoles"></select>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="cfgClaveSala">Contraseña</label>
+                                            <input id="cfgClaveSala" type="text" maxlength="20" autocomplete="off" placeholder="Sin contraseña">
+                                        </div>
+                                    </div>
+
+                                    <div class="config-visibility-row">
+                                        <span class="config-mode-label">Visibilidad de sala</span>
+                                        <div id="cfgVisibilidadSala" class="visibility-switch" role="group" aria-label="Visibilidad de la sala">
+                                            <button id="cfgSalaPublica" type="button" class="mode-pill mode-pill--activo" data-privada="false" aria-pressed="true">Pública</button>
+                                            <button id="cfgSalaPrivada" type="button" class="mode-pill" data-privada="true" aria-pressed="false">Privada</button>
+                                        </div>
+                                    </div>
+
+                                    <div class="config-toggles-row">
+                                        <label class="online-check" title="Agarrar un poder nuevo se suma a los que ya tenés"><input id="cfgCombinar" type="checkbox"> Combinar poderes</label>
+                                        <label class="online-check"><input id="cfgBloqueo" type="checkbox"> Solo el admin arma equipos</label>
+                                    </div>
+                                </div>
+                            </article>
+
+                            <article class="config-card">
+                                <div class="config-card-top config-card-top--player">
+                                    <div class="player-custom-preview">
+                                        <button id="avatarPresetPrev" class="preset-arrow-btn" type="button" aria-label="Estilo anterior">
+                                            <span class="preset-circle preset-circle--small" id="avatarPrevBadge">1</span>
+                                            <span class="preset-arrow-glyph" aria-hidden="true">◀</span>
+                                        </button>
+                                        <div class="player-circle-editor">
+                                            <div id="avatarMainCircle" class="preset-circle preset-circle--large" role="button" tabindex="0" title="Click para cambiar tu número o emoji">
+                                                <span id="avatarMainText">1</span>
+                                            </div>
+                                        </div>
+                                        <button id="avatarPresetNext" class="preset-arrow-btn" type="button" aria-label="Siguiente estilo">
+                                            <span class="preset-arrow-glyph" aria-hidden="true">▶</span>
+                                            <span class="preset-circle preset-circle--small" id="avatarNextBadge">10</span>
+                                        </button>
+                                    </div>
+                                    <span id="avatarJerseyLabel" class="config-jersey-label">Camiseta: Boca Juniors</span>
+                                </div>
+
+                                <div class="config-inner-box">
+                                    <h3>Configuraciones de jugador</h3>
+                                    <div class="config-fields-grid">
+                                        <div class="form-group">
+                                            <label for="avatarSala" title="Número o emoji dentro de tu círculo">Número / Emoji</label>
+                                            <input id="avatarSala" class="online-avatar__input" type="text" maxlength="16" autocomplete="off" placeholder="10 o ⚽">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="cfgZoom" title="También con las teclas 0 a 7 durante el partido">Zoom de cámara</label>
+                                            <select id="cfgZoom"></select>
+                                        </div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="cfgExtrapolacion" title="Adelanta lo que ves para compensar el ping">Extrapolación (ms)</label>
+                                        <input id="cfgExtrapolacion" type="number" min="0" max="200" step="10" value="0">
+                                    </div>
+                                    <p class="config-keys-strip">Moverse: WASD / Flechas · Patear: Espacio / X · Chat: Enter · Pausa: Esc</p>
+                                </div>
+                            </article>
+                        </div>
+                    </section>
+
                 </div>
 
                 <div id="cartelGol" class="online-cartel" hidden></div>
@@ -255,10 +435,28 @@
         </form>
     </dialog>
 
+    <!-- Selector de Club estilo FIFA -->
+    <dialog id="dialogoClubes" class="online-dialogo fifa-dialog">
+        <div class="fifa-header">
+            <div>
+                <h2 id="fifaTitulo" class="ssf-title">SELECCIONAR EQUIPO</h2>
+                <p id="fifaSubtitulo" class="fifa-subtitulo">Elegí un club para vestir a todo el equipo</p>
+            </div>
+            <button id="cerrarClubes" class="ssf-button ssf-button-danger online-mini" type="button" aria-label="Cerrar selector de clubes">✕</button>
+        </div>
+        <div class="fifa-controles">
+            <div id="fifaLigas" class="fifa-ligas" role="tablist" aria-label="Ligas y regiones"></div>
+            <input id="fifaBuscar" class="online-buscar fifa-buscar" type="search" maxlength="30" placeholder="Buscar club (ej: Chicago)..." aria-label="Buscar club">
+        </div>
+        <div id="fifaGrid" class="fifa-grid" role="listbox" aria-label="Clubes disponibles"></div>
+    </dialog>
+
     <script src="/socket.io/socket.io.js"></script>
     <script src="../js/arcade/sonidos.js"></script>
     <script src="../js/local/fisica-hbs.js"></script>
     <script src="../js/local/fisica-haxball.js"></script>
+    <script src="../js/online/clubes.js"></script>
+    <script src="../js/online/camara.js"></script>
     <script src="../js/online/red.js"></script>
     <script src="../js/online/dibujo.js"></script>
     <script src="../js/online/cliente.js"></script>

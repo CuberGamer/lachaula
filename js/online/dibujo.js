@@ -741,12 +741,55 @@
             });
         }
 
+        function dibujarCamisetaEnCirculo(x, y, r, club, equipo) {
+            if (!club) {
+                context.beginPath();
+                context.arc(x, y, r, 0, Math.PI * 2);
+                context.fillStyle = equipo === 'red' ? COLOR_ROJO : COLOR_AZUL;
+                context.fill();
+                return;
+            }
+            context.save();
+            context.beginPath();
+            context.arc(x, y, r, 0, Math.PI * 2);
+            context.clip();
+
+            context.fillStyle = club.primario || (equipo === 'red' ? COLOR_ROJO : COLOR_AZUL);
+            context.fillRect(x - r, y - r, r * 2, r * 2);
+
+            context.fillStyle = club.secundario || '#ffffff';
+            if (club.patron === 'bastones') {
+                const ancho = r * 0.42;
+                context.fillRect(x - ancho * 1.6, y - r, ancho, r * 2);
+                context.fillRect(x + ancho * 0.6, y - r, ancho, r * 2);
+            } else if (club.patron === 'franja-horizontal') {
+                context.fillRect(x - r, y - r * 0.34, r * 2, r * 0.68);
+            } else if (club.patron === 'franja-vertical') {
+                context.fillRect(x - r * 0.32, y - r, r * 0.64, r * 2);
+            } else if (club.patron === 'banda-diagonal') {
+                context.beginPath();
+                context.moveTo(x - r * 1.2, y + r * 0.85);
+                context.lineTo(x + r * 0.85, y - r * 1.2);
+                context.lineTo(x + r * 1.2, y - r * 0.85);
+                context.lineTo(x - r * 0.85, y + r * 1.2);
+                context.closePath();
+                context.fill();
+            } else if (club.patron === 'aros-horizontales') {
+                context.fillRect(x - r, y - r * 0.68, r * 2, r * 0.36);
+                context.fillRect(x - r, y + r * 0.32, r * 2, r * 0.36);
+            } else if (club.patron === 'cuello') {
+                context.beginPath();
+                context.arc(x, y - r * 0.85, r * 0.55, 0, Math.PI * 2);
+                context.fill();
+            }
+            context.restore();
+        }
+
         function dibujarJugador(player, escala = 1) {
             const acabaDePatear = false;
+            dibujarCamisetaEnCirculo(player.x, player.y, player.r, player.club, player.practica ? 'red' : player.equipo);
             context.beginPath();
             context.arc(player.x, player.y, player.r, 0, Math.PI * 2);
-            context.fillStyle = player.equipo === 'red' ? COLOR_ROJO : COLOR_AZUL;
-            context.fill();
             const poderes = player.poderes && player.poderes.length ? player.poderes : (player.activePower ? [player.activePower] : []);
             const nivelDe = power => (player.niveles && player.niveles[power]) || 1;
             poderes.forEach((power, indice) => {
@@ -768,15 +811,29 @@
                 context.beginPath();
                 context.arc(player.x, player.y, player.r, 0, Math.PI * 2);
             });
-            // Como en HaxBall: borde blanco mientras se mantiene "patear".
+            // Borde negro clásico en los jugadores (blanco solo al mantener "patear").
             context.strokeStyle = player.pateando || acabaDePatear ? '#fff' : '#000';
-            context.lineWidth = (player.pateando || acabaDePatear ? 3 : 2) * escala;
+            context.lineWidth = (player.pateando || acabaDePatear ? 3 : 2.2) * escala;
             context.stroke();
-            context.fillStyle = '#fff';
-            context.font = `700 ${Math.round(player.r * 0.8)}px "Press Start 2P", Arial, sans-serif`;
-            context.textAlign = 'center';
-            context.textBaseline = 'middle';
-            context.fillText(String(player.numero || ''), player.x, player.y + 1);
+            const texto = String(player.numero || '');
+            if (texto) {
+                context.font = `700 ${Math.round(player.r * 0.8)}px "Press Start 2P", Arial, sans-serif`;
+                context.textAlign = 'center';
+                context.textBaseline = 'middle';
+                if (player.practica) {
+                    context.lineWidth = Math.max(2, 2.4 * escala);
+                    context.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+                    context.strokeText(texto, player.x, player.y + 1);
+                    context.fillStyle = '#0f172a';
+                    context.fillText(texto, player.x, player.y + 1);
+                } else {
+                    context.lineWidth = Math.max(2.5, 3 * escala);
+                    context.strokeStyle = 'rgba(0, 0, 0, 0.88)';
+                    context.strokeText(texto, player.x, player.y + 1);
+                    context.fillStyle = '#fff';
+                    context.fillText(texto, player.x, player.y + 1);
+                }
+            }
             dibujarNombre(player, escala);
             if (player.escribiendo) dibujarEscribiendo(player, escala);
         }
@@ -874,14 +931,22 @@
          */
         function dibujar(estado, deltaMs, celebracion, camara = null) {
             actualizarEfectosVisuales(estado, deltaMs);
+            const mapaW = Math.max(1, (estado && estado.mapa && estado.mapa.width) || canvas.width);
+            const baseEscala = canvas.width / mapaW;
             const conZoom = camara && camara.zoom > 1.001;
-            if (conZoom) {
+            const aplicarTransform = conZoom || Math.abs(baseEscala - 1) > 0.001;
+
+            context.save();
+            context.setTransform(1, 0, 0, 1, 0, 0);
+            context.clearRect(0, 0, canvas.width, canvas.height);
+            context.restore();
+
+            if (aplicarTransform) {
+                const zoomTotal = (conZoom ? camara.zoom : 1) * baseEscala;
+                const offsetX = conZoom ? (canvas.width / 2 - camara.x * zoomTotal) : 0;
+                const offsetY = conZoom ? (canvas.height / 2 - camara.y * zoomTotal) : 0;
                 context.save();
-                context.setTransform(
-                    camara.zoom, 0, 0, camara.zoom,
-                    canvas.width / 2 - camara.x * camara.zoom,
-                    canvas.height / 2 - camara.y * camara.zoom
-                );
+                context.setTransform(zoomTotal, 0, 0, zoomTotal, offsetX, offsetY);
             }
             dibujarCancha(estado);
             dibujarEstelas();
@@ -891,7 +956,7 @@
             if (estado.ball) dibujarPelota(estado.ball, escala);
             dibujarPostes(estado);
             dibujarExplosiones();
-            if (conZoom) context.restore();
+            if (aplicarTransform) context.restore();
             // El festejo de gol va fijo en la pantalla (no se agranda con el zoom).
             if (celebracion) dibujarCelebracionGol(celebracion);
         }

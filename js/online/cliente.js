@@ -25,14 +25,10 @@
     const MS_TICK = 1000 / 60;
 
     /*
-     * Zoom como en HaxBall (teclas 0 a 7). Cada nivel dice cuánto se ve a lo
-     * ancho (en px de la cancha de referencia, se multiplica por la escala del
-     * mapa): 1 = la cancha entera; del 2 al 7 cada vez más cerca, con la cámara
-     * siguiendo a tu jugador. 0 = automático: las canchas normales se ven
-     * enteras y las muy grandes siguen a tu jugador para que no se vea todo chiquito.
+     * Zoom y cámara (ver camara.js): 0 = automático (canchas chicas enteras,
+     * canchas grandes 4v4+ siguen a tu jugador con minimapa estilo FIFA).
      */
-    const ANCHO_VISIBLE_ZOOM = { 0: 1100, 1: Infinity, 2: 1400, 3: 1200, 4: 1000, 5: 840, 6: 700, 7: 560 };
-    const NOMBRE_ZOOM = {
+    const NOMBRE_ZOOM = window.CamaraOnline ? window.CamaraOnline.NOMBRE_ZOOM : {
         0: 'Automático', 1: 'Cancha entera', 2: 'Zoom 2', 3: 'Zoom 3',
         4: 'Zoom 4', 5: 'Zoom 5', 6: 'Zoom 6', 7: 'Zoom 7 (máximo)'
     };
@@ -53,6 +49,13 @@
     };
     const NOMBRE_EQUIPO = { red: 'Rojo', blue: 'Azul' };
 
+    const PRESETS_AVATAR = ['1', '7', '9', '10', '11', '⚽', '🔥', '👑', '⚡', '🦁'];
+    const TIPOS_POWERUP = [
+        { id: 'SUPER_KICK', btnId: 'puBtnSuperKick' },
+        { id: 'BIG', btnId: 'puBtnBig' },
+        { id: 'SPEED', btnId: 'puBtnSpeed' }
+    ];
+
     const estado = {
         salaId: null,
         tuId: null,
@@ -61,7 +64,9 @@
         teclas: new Set(),
         bits: 0,
         panelVisible: true,
+        tabActiva: 'sala',
         cartelTimeout: null,
+        estadiosClubes: [],
         mapasBase: [],
         mapasHbs: [],
         mapasCustom: [],
@@ -69,13 +74,19 @@
         categoriaFiltro: 'Todos',
         busquedaMapa: '',
         archivoHbsNombre: '',
+        clubObjetivoEquipo: 'red',
+        clubLigaFiltro: 'Todas',
+        clubBusqueda: '',
         ultimoDibujo: null,
         ultimoPreviewClave: '',
+        ultimoPreviewMapaId: '',
+        ruletaAnimacion: null,
         ultimoCanchaIdleClave: '',
         zoomNivel: 0,
         extrapolacion: 0,
         camara: null,
-        avisoAjuste: null
+        avisoAjuste: null,
+        enGameover: false
     };
     estado.zoomNivel = leerNumeroGuardado(CLAVE_ZOOM, 0, 0, 7);
     estado.extrapolacion = leerNumeroGuardado(CLAVE_EXTRAPOLACION, 0, 0, MAX_EXTRAPOLACION);
@@ -88,12 +99,40 @@
     const dibujante = DibujoOnline.crearDibujante(canvas);
     const preview = $('previewMapa');
     const dibujantePreview = DibujoOnline.crearDibujante(preview);
+    const previewPrev = $('previewMapaPrev');
+    const dibujantePreviewPrev = previewPrev ? DibujoOnline.crearDibujante(previewPrev) : null;
+    const previewNext = $('previewMapaNext');
+    const dibujantePreviewNext = previewNext ? DibujoOnline.crearDibujante(previewNext) : null;
 
     /* ========================= */
     /* UTILIDADES                */
     /* ========================= */
 
+    function sinTildesMayus(texto) {
+        return String(texto || '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toUpperCase();
+    }
+
+    function actualizarEstadoBody() {
+        if (!estado.salaId) {
+            document.body.dataset.state = 'lobby';
+            return;
+        }
+        if (estado.enGameover) {
+            document.body.dataset.state = 'gameover';
+            return;
+        }
+        if (estado.sala && estado.sala.partido) {
+            document.body.dataset.state = (estado.panelVisible || estado.sala.partido.pausado) ? 'paused' : 'playing';
+            return;
+        }
+        document.body.dataset.state = 'lobby';
+    }
+
     function mostrarAviso(elemento, texto, duracionMs = 4000) {
+        if (!elemento) return;
         elemento.textContent = texto || '';
         clearTimeout(elemento._timeout);
         if (texto && duracionMs) elemento._timeout = setTimeout(() => { elemento.textContent = ''; }, duracionMs);
@@ -114,7 +153,7 @@
     }
 
     /* ========================= */
-    /* AVATAR (como en HaxBall)  */
+    /* AVATAR (número / emoji)   */
     /* ========================= */
 
     // Hasta 2 caracteres; un emoji compuesto cuenta como uno. El servidor vuelve a validar.
@@ -133,9 +172,97 @@
     function guardarAvatar(valor) {
         const avatar = recortarAvatar(valor);
         localStorage.setItem(CLAVE_AVATAR, avatar);
-        $('avatarJugador').value = avatar;
-        $('avatarSala').value = avatar;
+        if ($('avatarJugador')) $('avatarJugador').value = avatar;
+        if ($('avatarSala')) $('avatarSala').value = avatar;
+        actualizarPreviewAvatar();
         return avatar;
+    }
+
+    function numeroAutomaticoPropio() {
+        if (!estado.sala) return '1';
+        const yo = estado.sala.jugadores.find(j => j.id === estado.tuId);
+        if (!yo || !yo.equipo) return '1';
+        const miembros = estado.sala.jugadores.filter(j => j.equipo === yo.equipo);
+        const idx = miembros.findIndex(j => j.id === estado.tuId);
+        return String(idx >= 0 ? idx + 1 : 1);
+    }
+
+    function estiloCamisetaClub(club) {
+        if (!club) return '#fbbf24';
+        const p = club.primario || '#1e3a8a';
+        const s = club.secundario || '#facc15';
+        switch (club.patron) {
+        case 'bastones':
+            return `repeating-linear-gradient(90deg, ${p} 0 18%, ${s} 18% 36%)`;
+        case 'franja-horizontal':
+            return `linear-gradient(180deg, ${p} 0% 34%, ${s} 34% 66%, ${p} 66% 100%)`;
+        case 'franja-vertical':
+            return `linear-gradient(90deg, ${p} 0% 35%, ${s} 35% 65%, ${p} 65% 100%)`;
+        case 'banda-diagonal':
+            return `linear-gradient(135deg, ${p} 0% 38%, ${s} 38% 62%, ${p} 62% 100%)`;
+        case 'aros-horizontales':
+            return `repeating-linear-gradient(180deg, ${p} 0 22%, ${s} 22% 44%)`;
+        case 'cuello':
+            return `radial-gradient(circle at 50% 6%, ${s} 0% 24%, ${p} 25% 100%)`;
+        default:
+            return p;
+        }
+    }
+
+    function actualizarPreviewAvatar() {
+        const mainText = $('avatarMainText');
+        const mainCircle = $('avatarMainCircle');
+        const prevBadge = $('avatarPrevBadge');
+        const nextBadge = $('avatarNextBadge');
+        const jerseyLabel = $('avatarJerseyLabel');
+        if (!mainText || !mainCircle) return;
+
+        const actual = recortarAvatar($('avatarSala') ? $('avatarSala').value : avatarGuardado());
+        mainText.textContent = actual || numeroAutomaticoPropio();
+
+        const idx = PRESETS_AVATAR.indexOf(actual || mainText.textContent);
+        const baseIdx = idx >= 0 ? idx : 0;
+        const prevVal = PRESETS_AVATAR[(baseIdx - 1 + PRESETS_AVATAR.length) % PRESETS_AVATAR.length];
+        const nextVal = PRESETS_AVATAR[(baseIdx + 1) % PRESETS_AVATAR.length];
+        if (prevBadge) prevBadge.textContent = prevVal;
+        if (nextBadge) nextBadge.textContent = nextVal;
+
+        const yo = estado.sala && estado.sala.jugadores.find(j => j.id === estado.tuId);
+        const clubesCfg = (estado.sala && estado.sala.config && estado.sala.config.clubes) || { red: 'boca', blue: 'river' };
+        const enPractica = !!(estado.sala && estado.sala.partido && estado.sala.partido.practica);
+        const equipoEfectivo = (yo && (yo.equipo === 'red' || yo.equipo === 'blue')) ? yo.equipo : 'red';
+        const clubId = clubesCfg[equipoEfectivo] || 'boca';
+        const club = enPractica && window.ClubesLaChaula && window.ClubesLaChaula.CAMISETA_PRACTICA
+            ? window.ClubesLaChaula.CAMISETA_PRACTICA
+            : (clubId && window.ClubesLaChaula ? window.ClubesLaChaula.obtenerClub(clubId) : null);
+        if (club) {
+            const esBlanca = club.id === 'practica' || club.texto === '#0f172a' && club.primario === '#ffffff';
+            const colorTxt = esBlanca ? '#0f172a' : '#ffffff';
+            mainCircle.style.background = estiloCamisetaClub(club);
+            mainCircle.style.color = colorTxt;
+            mainText.style.color = colorTxt;
+            mainCircle.classList.toggle('preset-circle--light', esBlanca);
+            mainCircle.style.borderColor = esBlanca ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.16)';
+            if (jerseyLabel) {
+                const rolTxt = (!enPractica && (!yo || !yo.equipo)) ? ' (vista previa) · ' : '';
+                jerseyLabel.textContent = `Camiseta${rolTxt}: ${club.nombre}`;
+            }
+        } else {
+            mainCircle.style.background = '#ec4899';
+            mainCircle.style.color = '#ffffff';
+            mainText.style.color = '#ffffff';
+            mainCircle.classList.remove('preset-circle--light');
+            mainCircle.style.borderColor = 'rgba(255,255,255,0.16)';
+            if (jerseyLabel) jerseyLabel.textContent = 'Camiseta del equipo';
+        }
+    }
+
+    function ciclarPresetAvatar(paso) {
+        const actual = recortarAvatar($('avatarSala') ? $('avatarSala').value : avatarGuardado()) || numeroAutomaticoPropio();
+        const idx = PRESETS_AVATAR.indexOf(actual);
+        const base = idx === -1 ? (paso > 0 ? -1 : 0) : idx;
+        const nuevo = PRESETS_AVATAR[(base + paso + PRESETS_AVATAR.length) % PRESETS_AVATAR.length];
+        cambiarAvatar(nuevo);
     }
 
     async function cambiarAvatar(valor) {
@@ -143,7 +270,7 @@
         if (!estado.salaId) return;
         const respuesta = await accion('sala:avatar', { avatar });
         if (respuesta && respuesta.ok) {
-            mostrarAviso($('avisoSala'), avatar ? `Tu avatar ahora es "${avatar}".` : 'Sacaste tu avatar: se ve tu número.', 2500);
+            mostrarAviso($('avisoSala'), avatar ? `Tu dorsal/avatar ahora es "${avatar}".` : 'Sacaste tu avatar: se ve tu número.', 2500);
         }
     }
 
@@ -166,8 +293,9 @@
         return `lachaula_token_${salaId}`;
     }
 
-    function formatearTiempo(ms) {
-        const total = Math.max(0, Math.ceil(ms / 1000));
+    function formatearTiempo(ms, haciaArriba = false) {
+        const seg = haciaArriba ? Math.floor(ms / 1000) : Math.ceil(ms / 1000);
+        const total = Math.max(0, seg);
         return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
     }
 
@@ -203,7 +331,21 @@
             return;
         }
         pedirSalas();
-        intentarEntrarPorLink();
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('sala')) {
+            intentarEntrarPorLink();
+        } else if (params.get('autostart') === '1' && !estado.salaId) {
+            const nombreAuto = nombreGuardado() || 'Jugador 1';
+            $('nombreJugador').value = nombreAuto;
+            const resp = await accion('sala:crear', {
+                nombreJugador: nombreAuto,
+                avatar: avatarGuardado(),
+                nombre: `Sala de ${nombreAuto}`,
+                clave: '',
+                maxJugadores: 0
+            });
+            if (resp.ok) entrarASala(resp);
+        }
     });
 
     socket.on('disconnect', () => actualizarConexion('● Sin conexión, reintentando…', 'online-conexion--mal'));
@@ -334,6 +476,52 @@
     $('volverMenu').addEventListener('click', () => { window.location.href = 'menu.html'; });
 
     /* ========================= */
+    /* PESTAÑAS DEL PANEL        */
+    /* ========================= */
+
+    function cambiarTab(tab) {
+        const validas = ['estadios', 'sala', 'config'];
+        const destino = validas.includes(tab) ? tab : 'sala';
+        estado.tabActiva = destino;
+
+        const mapaTabs = {
+            estadios: { pane: $('tabEstadios'), btn: $('navTabEstadios') },
+            sala: { pane: $('tabSala'), btn: $('navTabSala') },
+            config: { pane: $('tabConfig'), btn: $('navTabConfig') }
+        };
+
+        validas.forEach(clave => {
+            const { pane, btn } = mapaTabs[clave];
+            const activo = clave === destino;
+            if (pane) {
+                pane.hidden = !activo;
+                if (activo) {
+                    pane.classList.remove('online-tabpane--animar');
+                    void pane.offsetWidth;
+                    pane.classList.add('online-tabpane--animar');
+                }
+            }
+            if (btn) {
+                btn.classList.toggle('dock-tab--activo', activo);
+                btn.setAttribute('aria-selected', String(activo));
+            }
+        });
+
+        if (destino === 'estadios') {
+            dibujarPreview(true);
+        }
+        if (destino === 'config') {
+            actualizarPreviewAvatar();
+        }
+    }
+
+    ['navTabEstadios', 'navTabSala', 'navTabConfig'].forEach(id => {
+        const btn = $(id);
+        if (!btn) return;
+        btn.addEventListener('click', () => cambiarTab(btn.dataset.tab));
+    });
+
+    /* ========================= */
     /* ENTRAR / SALIR DE LA SALA */
     /* ========================= */
 
@@ -341,8 +529,12 @@
         estado.salaId = respuesta.salaId;
         estado.tuId = respuesta.tuId;
         estado.token = respuesta.token;
-        $('avatarSala').value = avatarGuardado();
+        estado.enGameover = false;
+        if ($('avatarSala')) $('avatarSala').value = avatarGuardado();
         reiniciarRed();
+        if (Array.isArray(respuesta.estadiosClubes)) {
+            estado.estadiosClubes = respuesta.estadiosClubes;
+        }
         if (respuesta.mapas) estado.mapasBase = respuesta.mapas;
         if (Array.isArray(respuesta.mapasCustom)) estado.mapasCustom = respuesta.mapasCustom;
         reconstruirMapas();
@@ -351,9 +543,14 @@
         $('vistaSalas').hidden = true;
         $('vistaSala').hidden = false;
         document.body.classList.add('online--en-sala');
-        if (!respuesta.reconectado) $('chatMensajes').textContent = '';
+        if (!respuesta.reconectado) {
+            $('chatMensajes').textContent = '';
+            limpiarNotificaciones();
+        }
+        cambiarTab('sala');
         actualizarSala(respuesta.sala);
         mostrarPanel(!respuesta.sala.partido);
+        actualizarEstadoBody();
     }
 
     function volverALista(motivo) {
@@ -362,12 +559,15 @@
         estado.tuId = null;
         estado.token = null;
         estado.sala = null;
+        estado.enGameover = false;
         reiniciarRed();
         soltarTeclas();
+        limpiarNotificaciones();
         history.replaceState(null, '', window.location.pathname);
         $('vistaSala').hidden = true;
         $('vistaSalas').hidden = false;
         document.body.classList.remove('online--en-sala');
+        actualizarEstadoBody();
         if (motivo) mostrarAviso($('avisoSalas'), motivo, 6000);
         pedirSalas();
     }
@@ -388,7 +588,7 @@
         try {
             await navigator.clipboard.writeText(link);
             mostrarAviso($('avisoSala'), '¡Link copiado! Pasáselo a tus amigos.');
-        } catch (error) {
+        } catch {
             mostrarAviso($('avisoSala'), `Link de la sala: ${link}`, 10000);
         }
     });
@@ -407,10 +607,14 @@
         if (estado.sala) dibujarControlesAdmin(estado.sala);
     });
 
+    function anchoCanvasObjetivo(mapa) {
+        return Math.min(Math.max(1, mapa.width), 1440);
+    }
+
     function actualizarSala(sala) {
         const mapaAnterior = estado.sala && estado.sala.mapa.id;
         estado.sala = sala;
-        if (mapaAnterior !== sala.mapa.id || canvas.width !== sala.mapa.width) {
+        if (mapaAnterior !== sala.mapa.id || canvas.width !== anchoCanvasObjetivo(sala.mapa)) {
             ajustarCanvas(sala.mapa);
             dibujante.reiniciarEfectos();
         }
@@ -420,12 +624,17 @@
         dibujarEquipos(sala);
         dibujarControlesAdmin(sala);
         dibujarUltimoResultado(sala);
+        dibujarMatchupClubes(sala);
+        actualizarPreviewAvatar();
         if (!sala.partido) reiniciarRed();
+        dibujarPreview();
+        actualizarEstadoBody();
     }
 
     function ajustarCanvas(mapa) {
-        canvas.width = mapa.width;
-        canvas.height = mapa.height;
+        const objetivoW = anchoCanvasObjetivo(mapa);
+        canvas.width = objetivoW;
+        canvas.height = Math.max(1, Math.round(mapa.height * (objetivoW / Math.max(1, mapa.width))));
         canvas.style.aspectRatio = `${mapa.width} / ${mapa.height}`;
     }
 
@@ -451,8 +660,9 @@
                 if (jugador.desconectado) item.classList.add('online-jugador--desconectado');
                 item.dataset.id = jugador.id;
                 item.draggable = admin;
+                const etiquetaAvatar = jugador.avatar ? `[${jugador.avatar}] ` : '';
                 const nombre = crearElemento('span', 'online-jugador__nombre');
-                nombre.textContent = `${equipo ? `${posicion + 1}. ` : ''}${jugador.nombre}${jugador.id === estado.tuId ? ' (vos)' : ''}`;
+                nombre.textContent = `${equipo ? `${posicion + 1}. ` : ''}${etiquetaAvatar}${jugador.nombre}${jugador.id === estado.tuId ? ' (vos)' : ''}`;
                 item.appendChild(nombre);
                 if (jugador.admin) item.appendChild(crearElemento('span', 'online-jugador__admin', '★'));
                 if (jugador.escribiendo) item.appendChild(crearElemento('span', 'online-jugador__escribiendo', '💬'));
@@ -464,9 +674,7 @@
                     if (indice < 2) acciones.appendChild(botonMini('▶', `Mover a ${columnas[indice + 1] ? NOMBRE_EQUIPO[columnas[indice + 1]] : 'Espectadores'}`, () => moverJugador(jugador.id, columnas[indice + 1])));
                     if (jugador.id !== estado.tuId) {
                         acciones.appendChild(botonMini('★', jugador.admin ? 'Sacar admin' : 'Dar admin', () => accion('sala:admin', { jugadorId: jugador.id })));
-                        acciones.appendChild(botonMini('✕', 'Echar de la sala', () => {
-                            if (window.confirm(`¿Echar a ${jugador.nombre} de la sala?`)) accion('sala:echar', { jugadorId: jugador.id });
-                        }));
+                        acciones.appendChild(botonMini('✕', 'Echar de la sala', () => accion('sala:echar', { jugadorId: jugador.id })));
                     }
                     item.appendChild(acciones);
                 }
@@ -510,7 +718,7 @@
     });
 
     function llenarSelect(select, opciones) {
-        if (select.options.length === opciones.length) return;
+        if (!select || select.options.length === opciones.length) return;
         select.textContent = '';
         opciones.forEach(([valor, texto]) => {
             const opcion = crearElemento('option', '', texto);
@@ -519,51 +727,235 @@
         });
     }
 
+    function dibujarTamanosJugadores(sala, admin, enPartido, esHbs) {
+        const cont = $('tamanosJugadores');
+        if (!cont) return;
+        const lista = sala.tamanos || (window.ClubesLaChaula ? window.ClubesLaChaula.TAMANOS_JUGADORES : []);
+        const actual = sala.config.tamano || '3v3';
+        cont.textContent = '';
+        lista.forEach(t => {
+            const btn = crearElemento('button', 'tamano-pill', t.etiqueta);
+            btn.type = 'button';
+            const activo = t.id === actual;
+            btn.classList.toggle('tamano-pill--activo', activo);
+            btn.setAttribute('aria-pressed', String(activo));
+            btn.setAttribute('aria-label', `Tamaño de estadio ${t.nombre}`);
+            btn.title = `${t.nombre}`;
+            btn.disabled = !admin || enPartido || esHbs;
+            btn.addEventListener('click', () => {
+                if (t.id !== actual) estado.ruletaAnimacion = 'pulse';
+                accion('sala:config', { tamano: t.id });
+            });
+            cont.appendChild(btn);
+        });
+    }
+
+    function dibujarControlesPotenciadores(sala, admin, enPartido, esHbs) {
+        const modoPot = sala.config.potenciadoresModo || (sala.config.powerUps ? 'aleatorio' : 'desactivado');
+        const activos = Array.isArray(sala.config.potenciadoresActivos)
+            ? sala.config.potenciadoresActivos
+            : ['SUPER_KICK', 'BIG', 'SPEED'];
+
+        TIPOS_POWERUP.forEach(({ id, btnId }) => {
+            const btn = $(btnId);
+            if (!btn) return;
+            const prendido = !esHbs && modoPot !== 'desactivado' && activos.includes(id);
+            btn.setAttribute('aria-pressed', String(prendido));
+            btn.disabled = !admin || enPartido || esHbs;
+        });
+
+        document.querySelectorAll('#cfgModoPotenciadores .mode-pill').forEach(btn => {
+            const activo = btn.dataset.pumode === modoPot;
+            btn.classList.toggle('mode-pill--activo', activo);
+            btn.setAttribute('aria-pressed', String(activo));
+            btn.disabled = !admin || enPartido || esHbs;
+        });
+    }
+
+    function esEstadioDeClub(mapaId) {
+        return estado.estadiosClubes.some(e => e.id === mapaId);
+    }
+
     function dibujarControlesAdmin(sala) {
         const admin = soyAdmin();
         const enPartido = !!sala.partido;
         const esHbs = !!(sala.mapa && sala.mapa.hbs);
+        const esClub = esEstadioDeClub(sala.config.mapaId);
+
         $('infoNoAdmin').hidden = admin;
         llenarSelect($('cfgTiempo'), sala.tiempos.map(minutos => [minutos, `${minutos} min`]));
         llenarSelect($('cfgGoles'), sala.golesValidos.map(goles => [goles, goles ? `${goles}` : 'Sin límite']));
         llenarSelect($('cfgModo'), (sala.modos || []).map(modo => [modo.id, modo.nombre]));
         $('cfgModo').value = String(sala.config.modo || 'normal');
-        llenarSelect($('cfgTamano'), (sala.tamanos || []).map(tamano => [tamano.id, tamano.nombre]));
-        $('cfgTamano').value = String(sala.config.tamano || 'normal');
         $('cfgTiempo').value = String(sala.config.tiempoMin);
         $('cfgGoles').value = String(sala.config.goles);
-        $('cfgPowerUps').checked = esHbs ? false : sala.config.powerUps;
         $('cfgCombinar').checked = esHbs ? false : !!sala.config.combinarPoderes;
         $('cfgBloqueo').checked = sala.config.equiposBloqueados;
-        // Los que no son admin ven la configuración pero no la pueden tocar.
-        ['cfgModo', 'cfgTamano', 'cfgPowerUps'].forEach(id => { $(id).disabled = !admin || enPartido || esHbs; });
+
+        $('cfgModo').disabled = !admin || enPartido || esHbs;
         ['cfgTiempo', 'cfgGoles'].forEach(id => { $(id).disabled = !admin || enPartido; });
-        $('cfgCombinar').disabled = !admin || enPartido || esHbs || !sala.config.powerUps;
+        const modoPot = sala.config.potenciadoresModo || (sala.config.powerUps ? 'aleatorio' : 'desactivado');
+        $('cfgCombinar').disabled = !admin || enPartido || esHbs || modoPot === 'desactivado';
         $('cfgBloqueo').disabled = !admin;
+
+        const esPrivada = !!sala.privada;
+        if ($('cfgSalaPublica') && $('cfgSalaPrivada')) {
+            $('cfgSalaPublica').classList.toggle('mode-pill--activo', !esPrivada);
+            $('cfgSalaPrivada').classList.toggle('mode-pill--activo', esPrivada);
+            $('cfgSalaPublica').setAttribute('aria-pressed', String(!esPrivada));
+            $('cfgSalaPrivada').setAttribute('aria-pressed', String(esPrivada));
+            $('cfgSalaPublica').disabled = !admin;
+            $('cfgSalaPrivada').disabled = !admin;
+        }
+        if ($('cfgClaveSala')) {
+            $('cfgClaveSala').disabled = !admin;
+            $('cfgClaveSala').placeholder = sala.conClave ? 'Clave activa (vacío quita)' : 'Sin contraseña';
+        }
+
+        dibujarTamanosJugadores(sala, admin, enPartido, esHbs);
+        dibujarControlesPotenciadores(sala, admin, enPartido, esHbs);
+
         $('btnImportarHbs').hidden = !admin;
         $('btnImportarHbs').disabled = enPartido;
-        ['mapaAnterior', 'mapaSiguiente'].forEach(id => { $(id).hidden = !admin; $(id).disabled = enPartido; });
+
+        // En la ruleta izquierda: clubes muestran anterior/siguiente; catálogo muestra solo la elegida + botón volver.
+        $('mapaAnterior').hidden = !esClub;
+        $('mapaSiguiente').hidden = !esClub;
+        $('mapaAnterior').disabled = !admin || enPartido;
+        $('mapaSiguiente').disabled = !admin || enPartido;
+        if ($('btnVolverClubes')) {
+            $('btnVolverClubes').hidden = esClub || !admin || enPartido;
+        }
+
         document.querySelectorAll('.online-miniatura').forEach(boton => {
             const elegida = boton.dataset.mapa === sala.config.mapaId;
             boton.classList.toggle('online-miniatura--elegida', elegida);
             boton.setAttribute('aria-selected', String(elegida));
             boton.disabled = !admin || enPartido;
         });
+
         const mapa = mapaPorId(sala.config.mapaId) || sala.mapa;
         $('nombreMapa').textContent = mapa ? mapa.name : '—';
-        $('categoriaMapa').textContent = mapa
-            ? (mapa.hbs ? `${mapa.category || 'HaxBall'} · HaxBall .hbs` : 'Original La Chaula')
-            : '';
-        document.querySelector('.online-admin__botones').hidden = !admin;
-        $('mezclar').disabled = enPartido;
-        $('pausa').disabled = !enPartido;
-        $('pausa').textContent = enPartido && sala.partido.pausado ? 'Seguir (P)' : 'Pausa (P)';
-        $('iniciarDetener').textContent = enPartido ? 'Detener partido' : 'Iniciar partido';
-        $('iniciarDetener').classList.toggle('ssf-button-danger', enPartido);
+        if ($('categoriaMapa')) {
+            const tamObj = window.ClubesLaChaula && window.ClubesLaChaula.obtenerTamanoJugadores(sala.config.tamano || '3v3');
+            const sufijoTam = (!esHbs && tamObj) ? ` · ${tamObj.nombre}` : '';
+            if (mapa && mapa.club) $('categoriaMapa').textContent = `${mapa.club} · Estadio de club${sufijoTam}`;
+            else if (mapa && mapa.hbs) $('categoriaMapa').textContent = `${mapa.category || 'HaxBall'} · HaxBall .hbs`;
+            else $('categoriaMapa').textContent = `Cancha del catálogo${sufijoTam}`;
+        }
+
+        if ($('hudBtnPausa')) {
+            $('hudBtnPausa').disabled = !enPartido || !admin;
+            $('hudBtnPausa').textContent = enPartido && sala.partido.pausado ? 'Seguir' : 'Pausa';
+        }
+        if ($('hudBtnDetener')) {
+            $('hudBtnDetener').disabled = !enPartido || !admin;
+        }
+        const enPractica = !!(enPartido && sala.partido.practica);
+        if ($('btnPractica')) {
+            const btnPractica = $('btnPractica');
+            btnPractica.textContent = enPractica ? 'SALIR DE MODO PRÁCTICA' : 'PRÁCTICA';
+            btnPractica.title = enPractica
+                ? 'Salir del modo práctica'
+                : 'Entrar a practicar libremente en el estadio elegido';
+            btnPractica.classList.toggle('lobby-practice-btn--exit', enPractica);
+            btnPractica.disabled = !admin || (enPartido && !enPractica);
+        }
+
+        const btnPlay = $('iniciarDetener');
+        btnPlay.disabled = !admin;
+        if (enPartido && !enPractica) {
+            btnPlay.textContent = sala.partido.pausado ? 'REANUDAR' : 'PAUSAR';
+            btnPlay.classList.remove('ssf-button-primary');
+        } else {
+            btnPlay.textContent = 'PLAY';
+            btnPlay.classList.add('ssf-button-primary');
+        }
+    }
+
+    function aplicarEscudoImg(img, club) {
+        if (!img || !club || !window.ClubesLaChaula) return;
+        const url = window.ClubesLaChaula.obtenerEscudoUrl(club);
+        if (img.dataset.clubId === club.id && img.dataset.fallback !== '1') return;
+        img.dataset.clubId = club.id;
+        img.dataset.fallback = '0';
+        img.onerror = () => {
+            if (img.dataset.fallback === '1') return;
+            img.dataset.fallback = '1';
+            img.src = window.ClubesLaChaula.crearEscudoSvgDataUrl(club);
+        };
+        img.src = url;
+    }
+
+    function formatearGolesEquipo(goles, equipo) {
+        const lista = (goles || []).filter(g => g.equipo === equipo);
+        if (!lista.length) return '';
+        const agrupados = new Map();
+        lista.forEach(g => {
+            const nombre = `${g.autor || 'Gol'}${g.enContra ? ' (EC)' : ''}`;
+            const min = g.minuto ? `${g.minuto}'${g.extra ? '+' : ''}` : '';
+            if (!agrupados.has(nombre)) agrupados.set(nombre, []);
+            if (min) agrupados.get(nombre).push(min);
+        });
+        return Array.from(agrupados.entries())
+            .map(([nombre, mins]) => (mins.length ? `${nombre} ${mins.join(', ')}` : nombre))
+            .join(' · ');
+    }
+
+    function actualizarGoleadoresHud(sala) {
+        const cont = $('hudGolesResumen');
+        const listaRojo = $('hudGolesListaRojo');
+        const listaAzul = $('hudGolesListaAzul');
+        if (!cont || !listaRojo || !listaAzul) return;
+
+        const goles = sala.partido ? (sala.partido.goles || []) : [];
+        const txtRed = formatearGolesEquipo(goles, 'red');
+        const txtBlue = formatearGolesEquipo(goles, 'blue');
+        listaRojo.textContent = txtRed;
+        listaAzul.textContent = txtBlue;
+        cont.hidden = !(txtRed || txtBlue);
+    }
+
+    function dibujarMatchupClubes(sala) {
+        if (!window.ClubesLaChaula) return;
+        const admin = soyAdmin();
+        const clubesCfg = (sala.config && sala.config.clubes) || { red: 'boca', blue: 'river' };
+        const clubRed = window.ClubesLaChaula.obtenerClub(clubesCfg.red);
+        const clubBlue = window.ClubesLaChaula.obtenerClub(clubesCfg.blue);
+
+        aplicarEscudoImg($('imgEscudoRojo'), clubRed);
+        aplicarEscudoImg($('hudEscudoRojo'), clubRed);
+        if ($('siglaEscudoRojo')) $('siglaEscudoRojo').textContent = clubRed.sigla;
+        if ($('btnEscudoRojo')) {
+            $('btnEscudoRojo').disabled = !admin;
+            $('btnEscudoRojo').title = admin ? `${clubRed.nombre} (Click para cambiar club)` : clubRed.nombre;
+            $('btnEscudoRojo').setAttribute('aria-label', `Club equipo rojo: ${clubRed.nombre}. Cambiar`);
+        }
+
+        aplicarEscudoImg($('imgEscudoAzul'), clubBlue);
+        aplicarEscudoImg($('hudEscudoAzul'), clubBlue);
+        if ($('siglaEscudoAzul')) $('siglaEscudoAzul').textContent = clubBlue.sigla;
+        if ($('btnEscudoAzul')) {
+            $('btnEscudoAzul').disabled = !admin;
+            $('btnEscudoAzul').title = admin ? `${clubBlue.nombre} (Click para cambiar club)` : clubBlue.nombre;
+            $('btnEscudoAzul').setAttribute('aria-label', `Club equipo azul: ${clubBlue.nombre}. Cambiar`);
+        }
+
+        if ($('hudNombreRojo')) $('hudNombreRojo').textContent = sinTildesMayus(clubRed.nombre);
+        if ($('hudNombreAzul')) $('hudNombreAzul').textContent = sinTildesMayus(clubBlue.nombre);
+
+        const marcador = sala.partido
+            ? sala.partido.marcador
+            : (sala.ultimoResultado ? sala.ultimoResultado.marcador : { red: 0, blue: 0 });
+        if ($('lobbyGolesRojo')) $('lobbyGolesRojo').textContent = String(marcador.red || 0);
+        if ($('lobbyGolesAzul')) $('lobbyGolesAzul').textContent = String(marcador.blue || 0);
+        actualizarGoleadoresHud(sala);
     }
 
     function mapaPorId(id) {
-        return estado.mapas.find(mapa => mapa.id === id) || null;
+        return estado.estadiosClubes.find(m => m.id === id)
+            || estado.mapas.find(mapa => mapa.id === id)
+            || null;
     }
 
     const ORDEN_CATEGORIAS = [
@@ -601,15 +993,6 @@
             dibujarMiniaturas();
         }
         if (estado.sala) dibujarControlesAdmin(estado.sala);
-    }
-
-    function mapasFiltrados() {
-        const q = estado.busquedaMapa.trim().toLowerCase();
-        return estado.mapas.filter(mapa => {
-            if (estado.categoriaFiltro !== 'Todos' && grupoCategoria(mapa) !== estado.categoriaFiltro) return false;
-            if (q && !`${mapa.name} ${mapa.category || ''}`.toLowerCase().includes(q)) return false;
-            return true;
-        });
     }
 
     function dibujarFiltrosMapa() {
@@ -670,14 +1053,14 @@
                 estado.mapasHbs = data.mapas;
                 reconstruirMapas();
             }
-        } catch (err) {
+        } catch {
             // Si falla la carga opcional de catálogo, siguen disponibles los mapas base
         }
     }
 
     const cacheMiniaturas = new Map();
 
-    // Miniaturas de todas las canchas: se dibujan una vez en escala liviana y se cachean.
+    // Miniaturas de todas las canchas de la derecha: se dibujan una vez y se cachean.
     function dibujarMiniaturas() {
         const contenedor = $('miniaturas');
         contenedor.textContent = '';
@@ -712,23 +1095,29 @@
         aplicarFiltrosMapa();
     }
 
-    function elegirMapa(mapaId) {
+    function elegirMapa(mapaId, animacion = 'fade') {
         if (!soyAdmin() || !estado.sala || estado.sala.config.mapaId === mapaId) return;
+        estado.ruletaAnimacion = animacion;
         accion('sala:config', { mapaId });
     }
 
-    function moverCarrusel(paso) {
-        if (!estado.sala || !estado.mapas.length) return;
-        const lista = mapasFiltrados();
-        const pool = lista.length ? lista : estado.mapas;
+    // La ruleta izquierda recorre EXCLUSIVAMENTE los estadios de clubes.
+    function moverRuletaClubes(paso) {
+        if (!estado.sala || !estado.estadiosClubes.length) return;
+        const pool = estado.estadiosClubes;
         const indice = pool.findIndex(mapa => mapa.id === estado.sala.config.mapaId);
         const base = indice === -1 ? (paso > 0 ? -1 : 0) : indice;
         const siguiente = pool[(base + paso + pool.length) % pool.length];
-        elegirMapa(siguiente.id);
+        elegirMapa(siguiente.id, paso > 0 ? 'next' : 'prev');
     }
 
-    $('mapaAnterior').addEventListener('click', () => moverCarrusel(-1));
-    $('mapaSiguiente').addEventListener('click', () => moverCarrusel(1));
+    $('mapaAnterior').addEventListener('click', () => moverRuletaClubes(-1));
+    $('mapaSiguiente').addEventListener('click', () => moverRuletaClubes(1));
+    if ($('btnVolverClubes')) {
+        $('btnVolverClubes').addEventListener('click', () => {
+            if (estado.estadiosClubes.length) elegirMapa(estado.estadiosClubes[0].id, 'fade');
+        });
+    }
     $('buscarMapa').addEventListener('input', evento => {
         estado.busquedaMapa = evento.target.value || '';
         aplicarFiltrosMapa();
@@ -789,36 +1178,312 @@
         aplicarFiltrosMapa();
     });
 
-    // Vista previa grande de la cancha elegida.
-    function dibujarPreview() {
-        if (!estado.panelVisible || !estado.sala) return;
+    function dibujarSlotPreview(canv, dib, mapa) {
+        if (!canv || !dib || !mapa) return;
+        if (canv.width !== mapa.width || canv.height !== mapa.height) {
+            canv.width = mapa.width;
+            canv.height = mapa.height;
+        }
+        dib.dibujar(DibujoOnline.estadoVacio(mapa), 0, null);
+    }
+
+    const CLASES_ANIM_RULETA = [
+        'estadio-slot--anim-next',
+        'estadio-slot--anim-prev',
+        'estadio-slot--anim-fade',
+        'estadio-slot--anim-pulse'
+    ];
+
+    function lanzarGhostPreview(tipo) {
+        const stage = $('previewStage');
+        if (!stage || !preview || preview.width <= 0 || preview.height <= 0) return;
+        if (tipo !== 'next' && tipo !== 'prev' && tipo !== 'fade') return;
+        stage.querySelectorAll('.estadio-slot-ghost').forEach(el => el.remove());
+        const ghost = document.createElement('canvas');
+        ghost.width = preview.width;
+        ghost.height = preview.height;
+        ghost.className = `estadio-slot-ghost estadio-slot-ghost--${tipo}`;
+        const ctx = ghost.getContext('2d');
+        if (ctx) ctx.drawImage(preview, 0, 0);
+        stage.appendChild(ghost);
+        const limpiar = () => ghost.remove();
+        ghost.addEventListener('animationend', limpiar, { once: true });
+        setTimeout(limpiar, 420);
+    }
+
+    function animarRuletaEstadios(tipo) {
+        if (!tipo) return;
+        const clase = `estadio-slot--anim-${tipo}`;
+        document.querySelectorAll('.estadios-ruleta .estadio-slot').forEach(slot => {
+            slot.classList.remove(...CLASES_ANIM_RULETA);
+            void slot.offsetWidth;
+            slot.classList.add(clase);
+        });
+    }
+
+    // Vista previa en la ruleta de la izquierda (clubes arriba/centro/abajo o solo la cancha elegida del catálogo).
+    function dibujarPreview(forzarRedibujo = false) {
+        if (!estado.panelVisible || estado.tabActiva !== 'estadios' || !estado.sala) return;
         const mapa = estado.sala.mapa && estado.sala.mapa.id === estado.sala.config.mapaId
             ? estado.sala.mapa
             : (mapaPorId(estado.sala.config.mapaId) || estado.sala.mapa);
         const clave = `${mapa.id}|${mapa.width}|${mapa.height}|${mapa.theme || ''}`;
         const estatica = !!(mapa.hbs || mapa.theme === 'haxball');
-        if (estatica && estado.ultimoPreviewClave === clave) return;
+        if (!forzarRedibujo && estatica && estado.ultimoPreviewClave === clave) return;
+
+        const huboCambio = estado.ultimoPreviewClave !== '' && estado.ultimoPreviewClave !== clave;
+        const mismaCancha = estado.ultimoPreviewMapaId === mapa.id;
         estado.ultimoPreviewClave = clave;
-        if (preview.width !== mapa.width || preview.height !== mapa.height) {
-            preview.width = mapa.width;
-            preview.height = mapa.height;
+        estado.ultimoPreviewMapaId = mapa.id;
+
+        const tipoAnim = huboCambio
+            ? (estado.ruletaAnimacion || (mismaCancha ? 'pulse' : 'fade'))
+            : null;
+        if (tipoAnim) {
+            lanzarGhostPreview(tipoAnim);
         }
-        dibujantePreview.dibujar(DibujoOnline.estadoVacio(mapa), 0, null);
+
+        dibujarSlotPreview(preview, dibujantePreview, mapa);
+
+        const idxClub = estado.estadiosClubes.findIndex(e => e.id === estado.sala.config.mapaId);
+        if (idxClub !== -1 && estado.estadiosClubes.length > 0) {
+            const total = estado.estadiosClubes.length;
+            const prevMapa = estado.estadiosClubes[(idxClub - 1 + total) % total];
+            const nextMapa = estado.estadiosClubes[(idxClub + 1) % total];
+            dibujarSlotPreview(previewPrev, dibujantePreviewPrev, prevMapa);
+            dibujarSlotPreview(previewNext, dibujantePreviewNext, nextMapa);
+        }
+        if (tipoAnim) {
+            animarRuletaEstadios(tipoAnim);
+            estado.ruletaAnimacion = null;
+        }
+    }
+
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+
+    function svgEl(tag, attrs) {
+        const el = document.createElementNS(SVG_NS, tag);
+        Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, String(v)));
+        return el;
+    }
+
+    function crearSvgStat(tipo) {
+        const svg = svgEl('svg', { viewBox: '0 0 24 24', class: `stat-svg stat-svg--${tipo}`, 'aria-hidden': 'true' });
+        if (tipo === 'pelota') {
+            svg.append(
+                svgEl('circle', { cx: 12, cy: 12, r: 9.2, fill: '#f8fafc', stroke: '#09061b', 'stroke-width': 2 }),
+                svgEl('path', { d: 'M12 7.5 L15.6 10.1 L14.2 14.3 H9.8 L8.4 10.1 Z', fill: '#1e293b' }),
+                svgEl('path', { d: 'M12 7.5 V3.2 M15.6 10.1 L20.4 8.3 M14.2 14.3 L18 19 M9.8 14.3 L6 19 M8.4 10.1 L3.6 8.3', fill: 'none', stroke: '#1e293b', 'stroke-width': 1.5, 'stroke-linecap': 'round' })
+            );
+        } else if (tipo === 'guantes') {
+            svg.append(
+                svgEl('path', { d: 'M7 16.5 V9.5 C7 8 8.4 7.5 9.2 8.4 V6.4 C9.2 5.1 11 5.1 11 6.4 V5.1 C11 3.8 12.8 3.8 12.8 5.1 V6.1 C12.8 4.8 14.6 4.8 14.6 6.1 V7.9 C14.6 6.7 16.4 6.7 16.4 7.9 V12.3 L18.3 10.8 C19.5 9.9 20.6 11.3 19.6 12.7 L17.5 16.5 Z', fill: '#38bdf8', stroke: '#09061b', 'stroke-width': 1.7, 'stroke-linejoin': 'round' }),
+                svgEl('path', { d: 'M9.6 13.4 Q12 12.1 14.8 13.4', fill: 'none', stroke: '#e0f2fe', 'stroke-width': 1.5, 'stroke-linecap': 'round' }),
+                svgEl('rect', { x: 6.4, y: 16.4, width: 11.4, height: 4.4, rx: 1.4, fill: '#fbbf24', stroke: '#09061b', 'stroke-width': 1.6 })
+            );
+        } else {
+            svg.append(
+                svgEl('path', { d: 'M4.5 7.2 L9.4 7.2 L11.2 11.6 L18.5 13.1 C20.4 13.5 21.2 14.9 21 16.8 H4.2 V11.4 Z', fill: '#a78bfa', stroke: '#09061b', 'stroke-width': 1.7, 'stroke-linejoin': 'round' }),
+                svgEl('path', { d: 'M11.6 11.9 L14 14 M13.9 12.4 L16.2 14.4', fill: 'none', stroke: '#f5f3ff', 'stroke-width': 1.4, 'stroke-linecap': 'round' }),
+                svgEl('rect', { x: 5.2, y: 17, width: 2.4, height: 2.8, rx: 0.7, fill: '#ffd54f', stroke: '#09061b', 'stroke-width': 1.2 }),
+                svgEl('rect', { x: 11, y: 17, width: 2.4, height: 2.8, rx: 0.7, fill: '#ffd54f', stroke: '#09061b', 'stroke-width': 1.2 }),
+                svgEl('rect', { x: 17.3, y: 17, width: 2.4, height: 2.8, rx: 0.7, fill: '#ffd54f', stroke: '#09061b', 'stroke-width': 1.2 })
+            );
+        }
+        return svg;
+    }
+
+    function crearGrupoStatIconos(tipo, cantidad, etiqueta) {
+        const total = Math.max(0, Number(cantidad) || 0);
+        const grupo = crearElemento('span', 'lobby-stat-group');
+        grupo.title = `${etiqueta}: ${total}`;
+        grupo.setAttribute('aria-label', `${total} ${etiqueta}`);
+
+        if (total === 0) {
+            grupo.classList.add('lobby-stat-group--cero');
+            const wrap = crearElemento('span', 'lobby-stat-icon');
+            wrap.appendChild(crearSvgStat(tipo));
+            grupo.appendChild(wrap);
+            return grupo;
+        }
+
+        if (total <= 4) {
+            grupo.classList.add('lobby-stat-group--stack');
+            for (let i = 0; i < total; i += 1) {
+                const wrap = crearElemento('span', 'lobby-stat-icon');
+                wrap.style.zIndex = String(i + 1);
+                wrap.appendChild(crearSvgStat(tipo));
+                grupo.appendChild(wrap);
+            }
+            return grupo;
+        }
+
+        grupo.classList.add('lobby-stat-group--capped');
+        const wrap = crearElemento('span', 'lobby-stat-icon');
+        wrap.appendChild(crearSvgStat(tipo));
+        const num = crearElemento('span', 'lobby-stat-overlay-num', String(total));
+        grupo.append(wrap, num);
+        return grupo;
+    }
+
+    function renderizarTarjetasPuntuacion(puntuacion) {
+        const contRojo = $('puntuacionRojo');
+        const contAzul = $('puntuacionAzul');
+        if (!contRojo || !contAzul) return;
+
+        [
+            { equipo: 'red', cont: contRojo },
+            { equipo: 'blue', cont: contAzul }
+        ].forEach(({ equipo, cont }) => {
+            cont.textContent = '';
+            if (!puntuacion || !Array.isArray(puntuacion.jugadores) || !puntuacion.jugadores.length) {
+                cont.appendChild(crearElemento('p', 'lobby-score-empty', 'Sin partido anterior todavía.'));
+                return;
+            }
+            const lista = puntuacion.jugadores.filter(j => j.equipo === equipo);
+            if (!lista.length) {
+                cont.appendChild(crearElemento('p', 'lobby-score-empty', 'Sin jugadores en este equipo.'));
+                return;
+            }
+            lista.forEach(j => {
+                const esMvp = puntuacion.mvpId && j.id === puntuacion.mvpId;
+                const fila = crearElemento('div', `lobby-score-row${esMvp ? ' lobby-score-row--mvp' : ''}`);
+                fila.title = `Goles: ${j.goles} · Golazos: ${j.golazos} · Asistencias: ${j.asistencias} · Salvadas: ${j.atajadas} · Despejes: ${j.despejes} · Tiros: ${j.tiros} · Toques: ${j.toques}`;
+                const izq = crearElemento('span', 'lobby-score-name', j.nombre);
+                if (esMvp) {
+                    izq.appendChild(crearElemento('span', 'lobby-mvp-badge', 'MVP'));
+                }
+                const stats = crearElemento('span', 'lobby-score-stats');
+                stats.append(
+                    crearGrupoStatIconos('pelota', j.goles || 0, 'Goles'),
+                    crearGrupoStatIconos('botines', j.asistencias || 0, 'Asistencias'),
+                    crearGrupoStatIconos('guantes', j.atajadas || 0, 'Salvadas')
+                );
+
+                const pts = crearElemento('span', 'lobby-score-pts', `${j.puntos} pts`);
+                const der = crearElemento('span', 'lobby-score-right');
+                der.append(stats, pts);
+                fila.append(izq, der);
+                cont.appendChild(fila);
+            });
+        });
     }
 
     function dibujarUltimoResultado(sala) {
-        const elemento = $('ultimoResultado');
         const resultado = sala.ultimoResultado;
-        elemento.hidden = !resultado;
-        if (!resultado) return;
-        const goleadores = {};
-        resultado.goles.filter(gol => gol.autor && !gol.enContra).forEach(gol => {
-            goleadores[gol.autor] = (goleadores[gol.autor] || 0) + 1;
-        });
-        const lista = Object.entries(goleadores).map(([nombre, goles]) => (goles > 1 ? `${nombre} (${goles})` : nombre)).join(', ');
-        const ganador = resultado.ganador ? `Ganó ${NOMBRE_EQUIPO[resultado.ganador]}` : 'Empate';
-        elemento.textContent = `Último partido: ${ganador} · Rojo ${resultado.marcador.red} - ${resultado.marcador.blue} Azul${lista ? ` · Goles: ${lista}` : ''}`;
+        renderizarTarjetasPuntuacion(resultado && resultado.puntuacion);
     }
+
+    /* ========================= */
+    /* SELECTOR FIFA DE CLUBES   */
+    /* ========================= */
+
+    function abrirSelectorClubes(equipo) {
+        if (!soyAdmin() || !estado.sala || !window.ClubesLaChaula) return;
+        estado.clubObjetivoEquipo = equipo === 'blue' ? 'blue' : 'red';
+        estado.clubLigaFiltro = 'Todas';
+        estado.clubBusqueda = '';
+        if ($('fifaBuscar')) $('fifaBuscar').value = '';
+        if ($('fifaTitulo')) {
+            $('fifaTitulo').textContent = estado.clubObjetivoEquipo === 'red'
+                ? 'CLUB EQUIPO ROJO'
+                : 'CLUB EQUIPO AZUL';
+        }
+        renderizarSelectorClubes();
+        $('dialogoClubes').showModal();
+        if ($('fifaBuscar')) $('fifaBuscar').focus();
+    }
+
+    function renderizarSelectorClubes() {
+        if (!window.ClubesLaChaula) return;
+        const contLigas = $('fifaLigas');
+        const grid = $('fifaGrid');
+        if (!contLigas || !grid) return;
+
+        const ligas = ['Todas', ...Array.from(new Set(window.ClubesLaChaula.CLUBES.map(c => c.liga)))];
+        contLigas.textContent = '';
+        ligas.forEach(liga => {
+            const btn = crearElemento('button', 'fifa-liga-btn', liga);
+            btn.type = 'button';
+            btn.setAttribute('role', 'tab');
+            const activa = estado.clubLigaFiltro === liga;
+            btn.classList.toggle('fifa-liga-btn--activa', activa);
+            btn.setAttribute('aria-selected', String(activa));
+            btn.addEventListener('click', () => {
+                estado.clubLigaFiltro = liga;
+                renderizarSelectorClubes();
+            });
+            contLigas.appendChild(btn);
+        });
+
+        const clubsCfg = (estado.sala && estado.sala.config && estado.sala.config.clubes) || { red: 'boca', blue: 'river' };
+        const elegidoId = clubsCfg[estado.clubObjetivoEquipo];
+        const q = estado.clubBusqueda.trim().toLowerCase();
+
+        const filtrados = window.ClubesLaChaula.CLUBES.filter(c => {
+            if (estado.clubLigaFiltro !== 'Todas' && c.liga !== estado.clubLigaFiltro) return false;
+            if (q && !`${c.nombre} ${c.sigla} ${c.liga}`.toLowerCase().includes(q)) return false;
+            return true;
+        });
+
+        grid.textContent = '';
+        if (!filtrados.length) {
+            grid.appendChild(crearElemento('p', 'online-miniaturas__vacio', 'No se encontraron clubes con ese filtro.'));
+            return;
+        }
+
+        filtrados.forEach(club => {
+            const card = crearElemento('button', 'fifa-club-card');
+            card.type = 'button';
+            card.setAttribute('role', 'option');
+            card.style.setProperty('--club-accent', club.primario || '#fbbf24');
+            const elegido = club.id === elegidoId;
+            card.classList.toggle('fifa-club-card--elegido', elegido);
+            card.setAttribute('aria-selected', String(elegido));
+            card.setAttribute('aria-label', `${club.nombre} (${club.liga})`);
+
+            const ribbon = crearElemento('span', 'fifa-club-ribbon');
+            ribbon.setAttribute('aria-hidden', 'true');
+
+            const crestWrap = crearElemento('span', 'fifa-club-crest-wrap');
+            const img = crearElemento('img');
+            img.alt = `Escudo de ${club.nombre}`;
+            aplicarEscudoImg(img, club);
+            crestWrap.appendChild(img);
+
+            const pill = crearElemento('span', 'fifa-club-nombre', club.nombre);
+
+            card.append(
+                ribbon,
+                crestWrap,
+                pill,
+                crearElemento('span', 'fifa-club-liga', `${club.liga} · ${club.sigla}`)
+            );
+            card.addEventListener('click', () => {
+                const clubes = {
+                    ...(estado.sala && estado.sala.config && estado.sala.config.clubes),
+                    [estado.clubObjetivoEquipo]: club.id
+                };
+                accion('sala:config', { clubes });
+                $('dialogoClubes').close();
+            });
+            grid.appendChild(card);
+        });
+    }
+
+    if ($('btnEscudoRojo')) $('btnEscudoRojo').addEventListener('click', () => abrirSelectorClubes('red'));
+    if ($('btnEscudoAzul')) $('btnEscudoAzul').addEventListener('click', () => abrirSelectorClubes('blue'));
+    if ($('cerrarClubes')) $('cerrarClubes').addEventListener('click', () => $('dialogoClubes').close());
+    if ($('fifaBuscar')) {
+        $('fifaBuscar').addEventListener('input', evento => {
+            estado.clubBusqueda = evento.target.value || '';
+            renderizarSelectorClubes();
+        });
+    }
+
+    /* ========================= */
+    /* CONTROLES DE PARTIDA      */
+    /* ========================= */
 
     ['cfgTiempo', 'cfgGoles'].forEach(id => {
         $(id).addEventListener('change', evento => {
@@ -831,20 +1496,105 @@
         accion('sala:config', { modo: evento.target.value });
         evento.target.blur();
     });
-    $('cfgTamano').addEventListener('change', evento => {
-        accion('sala:config', { tamano: evento.target.value });
-        evento.target.blur();
-    });
-    $('cfgPowerUps').addEventListener('change', evento => accion('sala:config', { powerUps: evento.target.checked }));
     $('cfgCombinar').addEventListener('change', evento => accion('sala:config', { combinarPoderes: evento.target.checked }));
     $('cfgBloqueo').addEventListener('change', evento => accion('sala:config', { equiposBloqueados: evento.target.checked }));
-    $('mezclar').addEventListener('click', () => accion('sala:mezclar'));
-    $('pausa').addEventListener('click', () => accion('partido:pausa'));
-    $('iniciarDetener').addEventListener('click', () => accion(estado.sala && estado.sala.partido ? 'partido:detener' : 'partido:iniciar'));
+
+    TIPOS_POWERUP.forEach(({ id, btnId }) => {
+        const btn = $(btnId);
+        if (!btn) return;
+        btn.addEventListener('click', () => {
+            if (!estado.sala || !soyAdmin() || estado.sala.partido) return;
+            const cfg = estado.sala.config;
+            const actualModo = cfg.potenciadoresModo || (cfg.powerUps ? 'aleatorio' : 'desactivado');
+            const actuales = new Set(Array.isArray(cfg.potenciadoresActivos) ? cfg.potenciadoresActivos : ['SUPER_KICK', 'BIG', 'SPEED']);
+            if (actualModo === 'desactivado') {
+                actuales.add(id);
+                accion('sala:config', {
+                    potenciadoresActivos: Array.from(actuales),
+                    potenciadoresModo: 'determinado'
+                });
+                return;
+            }
+            if (actuales.has(id)) actuales.delete(id);
+            else actuales.add(id);
+            const lista = Array.from(actuales);
+            if (!lista.length) {
+                accion('sala:config', { potenciadoresActivos: [], potenciadoresModo: 'desactivado' });
+            } else {
+                accion('sala:config', { potenciadoresActivos: lista });
+            }
+        });
+    });
+
+    document.querySelectorAll('#cfgModoPotenciadores .mode-pill').forEach(btn => {
+        btn.addEventListener('click', () => {
+            if (!estado.sala || !soyAdmin() || estado.sala.partido) return;
+            const nuevoModo = btn.dataset.pumode;
+            const cfg = estado.sala.config;
+            const activos = Array.isArray(cfg.potenciadoresActivos) ? cfg.potenciadoresActivos : [];
+            const payload = { potenciadoresModo: nuevoModo };
+            if (nuevoModo !== 'desactivado' && activos.length === 0) {
+                payload.potenciadoresActivos = ['SUPER_KICK', 'BIG', 'SPEED'];
+            }
+            accion('sala:config', payload);
+        });
+    });
+
+    document.querySelectorAll('#cfgVisibilidadSala .mode-pill').forEach(btn => {
+        btn.addEventListener('click', () => {
+            if (!estado.sala || !soyAdmin()) return;
+            const privada = btn.dataset.privada === 'true';
+            accion('sala:config', { privada });
+        });
+    });
+
+    if ($('cfgClaveSala')) {
+        $('cfgClaveSala').addEventListener('change', evento => {
+            if (!estado.sala || !soyAdmin()) return;
+            accion('sala:config', { clave: evento.target.value });
+            evento.target.blur();
+        });
+    }
+
+    if ($('hudBtnPausa')) $('hudBtnPausa').addEventListener('click', () => accion('partido:pausa'));
+    if ($('hudBtnDetener')) $('hudBtnDetener').addEventListener('click', () => accion('partido:detener'));
+    if ($('btnPractica')) {
+        $('btnPractica').addEventListener('click', () => {
+            if (estado.sala && estado.sala.partido && estado.sala.partido.practica) {
+                accion('partido:detener');
+            } else {
+                accion('partido:iniciar', { practica: true });
+            }
+        });
+    }
+    $('iniciarDetener').addEventListener('click', async () => {
+        if (!estado.sala) return;
+        const partido = estado.sala.partido;
+        if (partido && !partido.practica) {
+            const estabaPausado = !!partido.pausado;
+            await accion('partido:pausa');
+            if (estabaPausado) mostrarPanel(false);
+        } else {
+            await accion('partido:iniciar');
+        }
+    });
 
     function mostrarPanel(visible) {
         estado.panelVisible = visible;
-        $('panelSala').hidden = !visible;
+        const panel = $('panelSala');
+        panel.hidden = !visible;
+        if (visible) {
+            panel.style.animation = 'none';
+            void panel.offsetWidth;
+            panel.style.animation = '';
+            soltarTeclas();
+            if (estado.tabActiva === 'estadios') {
+                dibujarPreview(true);
+            }
+        } else if (document.activeElement && document.activeElement !== document.body) {
+            document.activeElement.blur();
+        }
+        actualizarEstadoBody();
     }
 
     $('botonPanel').addEventListener('click', () => mostrarPanel(!estado.panelVisible));
@@ -908,17 +1658,60 @@
     }
 
     /* ========================= */
+    /* NOTIFICACIONES EN VIVO    */
+    /* ========================= */
+
+    function limpiarNotificaciones() {
+        const cont = $('notificacionesPartido');
+        if (cont) cont.textContent = '';
+    }
+
+    function mostrarNotificacionJugada(notif) {
+        const cont = $('notificacionesPartido');
+        if (!cont || !notif || !notif.tipo) return;
+        if (!['atajada', 'asistencia', 'tiro', 'gol', 'golazo'].includes(notif.tipo)) return;
+
+        const iconoTipo = notif.tipo === 'atajada'
+            ? 'guantes'
+            : (notif.tipo === 'asistencia' ? 'botines' : 'pelota');
+        const toast = crearElemento('div', `notif-evento notif-evento--${notif.tipo}`);
+        const icono = crearElemento('span', 'notif-evento__icono');
+        icono.appendChild(crearSvgStat(iconoTipo));
+
+        const autorNombre = notif.autor || notif.jugador || '';
+        const textoWrap = crearElemento('div', 'notif-evento__texto');
+        textoWrap.append(crearElemento('span', 'notif-evento__titulo', notif.titulo || notif.tipo.toUpperCase()));
+        if (autorNombre) {
+            textoWrap.appendChild(crearElemento('span', 'notif-evento__autor', autorNombre));
+        }
+
+        const pts = crearElemento('span', 'notif-evento__pts', `+${notif.puntos || 0}`);
+        toast.append(icono, textoWrap, pts);
+        cont.appendChild(toast);
+
+        while (cont.children.length > 2) {
+            cont.removeChild(cont.firstChild);
+        }
+        setTimeout(() => {
+            if (toast.parentNode === cont) cont.removeChild(toast);
+        }, 2500);
+    }
+
+    socket.on('partido:notificacion', mostrarNotificacionJugada);
+
+    /* ========================= */
     /* PARTIDO                   */
     /* ========================= */
 
     socket.on('partido:inicio', ({ mapa }) => {
+        estado.enGameover = false;
         if (estado.sala) estado.sala.mapa = mapa;
         ajustarCanvas(mapa);
         dibujante.reiniciarEfectos();
         reiniciarRed();
+        limpiarNotificaciones();
         sonar('silbato');
         mostrarPanel(false);
-        if (document.activeElement) document.activeElement.blur();
     });
 
     function reiniciarRed() {
@@ -941,7 +1734,9 @@
     });
 
     socket.on('partido:detenido', () => {
+        estado.enGameover = false;
         reiniciarRed();
+        cambiarTab('sala');
         mostrarPanel(true);
     });
 
@@ -970,35 +1765,47 @@
     });
 
     socket.on('partido:fin', evento => {
+        estado.enGameover = true;
+        actualizarEstadoBody();
         const texto = evento.ganador ? `¡GANÓ ${NOMBRE_EQUIPO[evento.ganador].toUpperCase()}!` : '¡EMPATE!';
-        mostrarCartel(`${texto} ${evento.marcador.red} - ${evento.marcador.blue}`, evento.ganador, 4000);
+        const mvpTexto = evento.puntuacion && evento.puntuacion.mvpNombre
+            ? ` · MVP: ${evento.puntuacion.mvpNombre}`
+            : '';
+        mostrarCartel(`${texto} ${evento.marcador.red} - ${evento.marcador.blue}${mvpTexto}`, evento.ganador, 4000);
         sonar('silbato');
         reiniciarRed();
-        setTimeout(() => mostrarPanel(true), 1500);
+        setTimeout(() => {
+            estado.enGameover = false;
+            cambiarTab('sala');
+            mostrarPanel(true);
+        }, 1500);
     });
 
     function textoFase(foto) {
         if (foto.p) return 'PAUSA';
-        if (foto.f === 'SAQUE') return `SAQUE ${foto.s === 'red' ? 'ROJO' : 'AZUL'}`;
+        if (foto.f === 'SAQUE') return foto.pr ? 'PRÁCTICA · SAQUE' : `SAQUE ${foto.s === 'red' ? 'ROJO' : 'AZUL'}`;
         if (foto.f === 'GOL') return '¡GOL!';
+        if (foto.pr) return 'PRÁCTICA';
         if (foto.f === 'TIEMPO_EXTRA' || foto.x) return 'TIEMPO EXTRA';
-        return '';
+        return 'EN VIVO';
     }
 
     // El marcador se toca solo cuando cambia: escribirlo en cada cuadro obligaba
     // al navegador a recalcular la página 60 veces por segundo.
     const textosHud = {};
     function ponerTextoHud(id, valor) {
+        const el = $(id);
+        if (!el) return;
         const texto = String(valor);
         if (textosHud[id] === texto) return;
         textosHud[id] = texto;
-        $(id).textContent = texto;
+        el.textContent = texto;
     }
 
     function actualizarHud(foto) {
         ponerTextoHud('golesRojo', foto ? foto.m[0] : (estado.sala && estado.sala.partido ? estado.sala.partido.marcador.red : 0));
         ponerTextoHud('golesAzul', foto ? foto.m[1] : (estado.sala && estado.sala.partido ? estado.sala.partido.marcador.blue : 0));
-        ponerTextoHud('reloj', foto ? formatearTiempo(foto.t) : '--:--');
+        ponerTextoHud('reloj', foto ? formatearTiempo(foto.t, !!foto.pr) : '--:--');
         ponerTextoHud('faseTexto', foto ? textoFase(foto) : (estado.sala && estado.sala.partido ? '' : 'ESPERANDO'));
     }
 
@@ -1012,6 +1819,16 @@
         ['red', 'blue'].forEach(equipo => sala.jugadores
             .filter(jugador => jugador.equipo === equipo)
             .forEach((jugador, indice) => numeros.set(jugador.id, indice + 1)));
+        const clubesCfg = (sala.config && sala.config.clubes) || { red: 'boca', blue: 'river' };
+        const clubRed = window.ClubesLaChaula ? window.ClubesLaChaula.obtenerClub(clubesCfg.red) : null;
+        const clubBlue = window.ClubesLaChaula ? window.ClubesLaChaula.obtenerClub(clubesCfg.blue) : null;
+        const enPractica = !!(foto.pr || (sala.partido && sala.partido.practica));
+        const clubPractica = (window.ClubesLaChaula && window.ClubesLaChaula.CAMISETA_PRACTICA) || {
+            primario: '#ffffff',
+            secundario: '#e2e8f0',
+            patron: 'solida'
+        };
+
         const pelotaPredicha = prediccionActual && prediccionActual.pelota;
         const colorPelota = (sala.mapa && sala.mapa.ballPhysics && sala.mapa.ballPhysics.color) || null;
         base.ball = pelotaPredicha
@@ -1030,6 +1847,8 @@
             return {
                 id, x, y, r,
                 equipo: jugador.equipo,
+                practica: enPractica,
+                club: enPractica ? clubPractica : (jugador.equipo === 'red' ? clubRed : (jugador.equipo === 'blue' ? clubBlue : null)),
                 pateando: !!pateando,
                 activePower: power ? String(power).split('+')[0] : null,
                 poderes: power ? Array.from(new Set(String(power).split('+'))) : [],
@@ -1073,6 +1892,7 @@
                 const dibujo = estadoParaDibujar(foto, prediccionActual);
                 const camara = actualizarCamara(dibujo, delta);
                 dibujante.dibujar(dibujo, foto && !foto.p ? delta : 0, celebracionDe(ultima), camara);
+                dibujarMinimapa(dibujo, camara);
                 dibujarAvisoAjuste(delta);
                 estado.ultimoCanchaIdleClave = '';
             } else {
@@ -1082,6 +1902,8 @@
                     estado.ultimoCanchaIdleClave = claveIdle;
                     dibujante.dibujar(DibujoOnline.estadoVacio(mapa), 0, null, null);
                 }
+                const mini = $('minimapa');
+                if (mini) mini.hidden = true;
             }
             actualizarHud(ultima);
             dibujarPreview();
@@ -1090,38 +1912,128 @@
     }
 
     /* ========================= */
-    /* ZOOM Y EXTRAPOLACIÓN      */
+    /* ZOOM, CÁMARA Y MINIMAPA   */
     /* ========================= */
 
     function zoomDe(mapa) {
-        const ancho = ANCHO_VISIBLE_ZOOM[estado.zoomNivel] * (mapa.escala || 1);
-        return Math.max(1, mapa.width / ancho);
+        return window.CamaraOnline ? window.CamaraOnline.zoomDe(mapa, estado.zoomNivel) : 1;
     }
 
-    /**
-     * La cámara sigue a tu jugador (o a la pelota si mirás) y nunca muestra
-     * afuera de la cancha. Se mueve suave, igual que el zoom al cambiarlo.
-     */
     function actualizarCamara(dibujo, delta) {
-        const mapa = dibujo.mapa;
-        const objetivoZoom = zoomDe(mapa);
+        if (!window.CamaraOnline) return null;
         const propio = dibujo.players.find(jugador => jugador.esVos);
-        const foco = propio || dibujo.ball || { x: mapa.width / 2, y: mapa.height / 2 };
-        let camara = estado.camara;
-        if (!camara || camara.mapa !== mapa.id || camara.ancho !== mapa.width) {
-            camara = { x: foco.x, y: foco.y, zoom: objetivoZoom, mapa: mapa.id, ancho: mapa.width };
-        }
-        const suave = 1 - Math.exp(-Math.max(0, delta) / 90);
-        camara.zoom += (objetivoZoom - camara.zoom) * (1 - Math.exp(-Math.max(0, delta) / 120));
-        camara.x += (foco.x - camara.x) * suave;
-        camara.y += (foco.y - camara.y) * suave;
-        // Que la vista no se salga de la cancha.
-        const mitadAncho = mapa.width / (2 * camara.zoom);
-        const mitadAlto = mapa.height / (2 * camara.zoom);
-        camara.x = Math.min(mapa.width - mitadAncho, Math.max(mitadAncho, camara.x));
-        camara.y = Math.min(mapa.height - mitadAlto, Math.max(mitadAlto, camara.y));
+        const foco = propio || dibujo.ball || { x: dibujo.mapa.width / 2, y: dibujo.mapa.height / 2 };
+        const camara = window.CamaraOnline.actualizarCamara(estado.camara, dibujo.mapa, foco, estado.zoomNivel, delta);
         estado.camara = camara;
         return camara;
+    }
+
+    function dibujarMinimapa(dibujo, camara) {
+        const mini = $('minimapa');
+        if (!mini || !window.CamaraOnline) return;
+        const mostrar = !!(estado.sala && estado.sala.partido && !estado.panelVisible && window.CamaraOnline.debeMostrarMinimapa(camara));
+        if (!mostrar) {
+            mini.hidden = true;
+            return;
+        }
+
+        const mapa = dibujo.mapa;
+        const targetW = 240;
+        const targetH = Math.max(88, Math.round(targetW * mapa.height / Math.max(1, mapa.width)));
+        if (mini.width !== targetW || mini.height !== targetH) {
+            mini.width = targetW;
+            mini.height = targetH;
+            mini.style.aspectRatio = `${mapa.width} / ${mapa.height}`;
+        }
+        mini.hidden = false;
+
+        const ctx = mini.getContext('2d');
+        if (!ctx) return;
+        const sx = targetW / Math.max(1, mapa.width);
+        const sy = targetH / Math.max(1, mapa.height);
+        const field = dibujo.field || { left: 80, right: mapa.width - 80, top: 40, bottom: mapa.height - 40 };
+
+        ctx.clearRect(0, 0, targetW, targetH);
+
+        // Fondo de radar táctico estilo FIFA (translúcido sobre el césped)
+        ctx.fillStyle = 'rgba(10, 12, 18, 0.24)';
+        ctx.fillRect(0, 0, targetW, targetH);
+
+        const fx = field.left * sx;
+        const fy = field.top * sy;
+        const fw = (field.right - field.left) * sx;
+        const fh = (field.bottom - field.top) * sy;
+
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+        ctx.fillRect(fx, fy, fw, fh);
+
+        // Líneas de la cancha
+        ctx.strokeStyle = 'rgba(248, 250, 252, 0.42)';
+        ctx.lineWidth = 1.2;
+        ctx.strokeRect(fx, fy, fw, fh);
+
+        const cx = (mapa.width / 2) * sx;
+        const cy = (mapa.height / 2) * sy;
+        ctx.beginPath();
+        ctx.moveTo(cx, fy);
+        ctx.lineTo(cx, fy + fh);
+        ctx.stroke();
+
+        const radioCentro = Math.max(6, (mapa.radioSaque || mapa.width * 0.085) * sx);
+        ctx.beginPath();
+        ctx.arc(cx, cy, radioCentro, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Arcos
+        const gTop = (dibujo.goalTop || (mapa.height * 0.35)) * sy;
+        const gBot = (dibujo.goalBottom || (mapa.height * 0.65)) * sy;
+        const prof = Math.max(4, (mapa.profundidadArco || 45) * sx);
+        ctx.fillStyle = 'rgba(244, 63, 94, 0.22)';
+        ctx.fillRect(fx - prof, gTop, prof, gBot - gTop);
+        ctx.fillStyle = 'rgba(56, 189, 248, 0.22)';
+        ctx.fillRect(fx + fw, gTop, prof, gBot - gTop);
+        ctx.strokeRect(fx - prof, gTop, prof, gBot - gTop);
+        ctx.strokeRect(fx + fw, gTop, prof, gBot - gTop);
+
+        // Power-ups activos
+        (dibujo.activePowerUps || []).forEach(pu => {
+            ctx.beginPath();
+            ctx.arc(pu.x * sx, pu.y * sy, 2.5, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(253, 224, 71, 0.9)';
+            ctx.fill();
+        });
+
+        // Jugadores
+        (dibujo.players || []).forEach(p => {
+            const px = p.x * sx;
+            const py = p.y * sy;
+            const radio = p.esVos ? 4.4 : 3.5;
+            if (p.esVos) {
+                ctx.beginPath();
+                ctx.arc(px, py, radio + 2.2, 0, Math.PI * 2);
+                ctx.strokeStyle = '#ec4899';
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+            }
+            ctx.beginPath();
+            ctx.arc(px, py, radio, 0, Math.PI * 2);
+            ctx.fillStyle = p.practica ? '#ffffff' : (p.equipo === 'red' ? '#f43f5e' : '#38bdf8');
+            ctx.fill();
+            ctx.strokeStyle = '#0f172a';
+            ctx.lineWidth = 1.1;
+            ctx.stroke();
+        });
+
+        // Pelota
+        if (dibujo.ball) {
+            ctx.beginPath();
+            ctx.arc(dibujo.ball.x * sx, dibujo.ball.y * sy, 3.1, 0, Math.PI * 2);
+            ctx.fillStyle = '#fde047';
+            ctx.fill();
+            ctx.strokeStyle = '#0f172a';
+            ctx.lineWidth = 1.1;
+            ctx.stroke();
+        }
     }
 
     function cambiarZoom(nivel) {
@@ -1196,11 +2108,19 @@
     }
 
     window.addEventListener('keydown', evento => {
-        if (!estado.salaId || $('dialogoClave').open || $('dialogoImportarHbs').open) return;
+        if (!estado.salaId || $('dialogoClave').open || $('dialogoImportarHbs').open || ($('dialogoClubes') && $('dialogoClubes').open)) return;
         const enTexto = escribiendo(evento.target);
         if (evento.code === 'Escape') {
             if (enTexto) evento.target.blur();
-            else mostrarPanel(!estado.panelVisible);
+            else {
+                const proximoVisible = !estado.panelVisible;
+                mostrarPanel(proximoVisible);
+                if (estado.sala && estado.sala.partido && soyAdmin()) {
+                    const pausado = !!estado.sala.partido.pausado;
+                    if (proximoVisible && !pausado) accion('partido:pausa');
+                    else if (!proximoVisible && pausado) accion('partido:pausa');
+                }
+            }
             return;
         }
         if (enTexto) return;
@@ -1257,15 +2177,35 @@
         evento.target.blur();
     });
     $('avatarJugador').addEventListener('change', evento => guardarAvatar(evento.target.value));
+    $('avatarSala').addEventListener('input', () => actualizarPreviewAvatar());
     $('avatarSala').addEventListener('change', evento => {
         cambiarAvatar(evento.target.value);
         evento.target.blur();
     });
     $('avatarSala').addEventListener('focus', soltarTeclas);
+    if ($('avatarMainCircle')) {
+        const enfocarAvatar = () => {
+            if ($('avatarSala')) {
+                $('avatarSala').focus();
+                $('avatarSala').select();
+            }
+        };
+        $('avatarMainCircle').addEventListener('click', enfocarAvatar);
+        $('avatarMainCircle').addEventListener('keydown', evento => {
+            if (evento.key === 'Enter' || evento.key === ' ') {
+                evento.preventDefault();
+                enfocarAvatar();
+            }
+        });
+    }
+    if ($('avatarPresetPrev')) $('avatarPresetPrev').addEventListener('click', () => ciclarPresetAvatar(-1));
+    if ($('avatarPresetNext')) $('avatarPresetNext').addEventListener('click', () => ciclarPresetAvatar(1));
+
     $('nombreJugador').addEventListener('change', () => {
         const nombre = $('nombreJugador').value.trim();
         if (nombre) localStorage.setItem(CLAVE_NOMBRE, nombre);
     });
+    actualizarEstadoBody();
     cargarCatalogoHbs();
     requestAnimationFrame(bucle);
 })();

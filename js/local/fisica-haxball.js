@@ -170,7 +170,17 @@
     }
 
     // `aleatorio` se puede inyectar (devuelve [0, 1) como Math.random) para tests deterministas.
-    function crearEstado({ mapa, ladoIzquierdo = 'red', kickoffTeam = null, jugadores = [], powerUps = false, combinarPoderes = false, aleatorio = Math.random } = {}) {
+    function crearEstado({
+        mapa,
+        ladoIzquierdo = 'red',
+        kickoffTeam = null,
+        jugadores = [],
+        powerUps = false,
+        potenciadoresModo = null,
+        potenciadoresActivos = null,
+        combinarPoderes = false,
+        aleatorio = Math.random
+    } = {}) {
         if (mapa && mapa.hbs && Hbs) {
             return Hbs.crearEstado({ mapa, ladoIzquierdo, kickoffTeam, jugadores });
         }
@@ -201,6 +211,17 @@
             };
         });
 
+        const modoPot = potenciadoresModo || (powerUps ? 'aleatorio' : 'desactivado');
+        const listaActivos = Array.isArray(potenciadoresActivos)
+            ? potenciadoresActivos.filter(t => TIPOS_POWERUP.includes(t))
+            : TIPOS_POWERUP.slice();
+        const tiposPermitidos = modoPot === 'desactivado'
+            ? []
+            : (modoPot === 'determinado'
+                ? listaActivos
+                : (listaActivos.length ? listaActivos : TIPOS_POWERUP.slice()));
+        const habilitados = modoPot !== 'desactivado' && tiposPermitidos.length > 0;
+
         const estado = {
             motor: 'haxball',
             mapa: map,
@@ -212,7 +233,9 @@
             players,
             fisicaPelota: pelotaDelModo(map.modo),
             ball: { x: centroX, y: map.height / 2, vx: 0, vy: 0, r: pelotaDelModo(map.modo).radio * map.escala, invMass: pelotaDelModo(map.modo).invMass },
-            powerUpsHabilitados: !!powerUps,
+            powerUpsHabilitados: habilitados,
+            potenciadoresModo: modoPot,
+            tiposPowerUps: tiposPermitidos,
             // Combinar poderes: agarrar uno nuevo se suma a los que ya tenés (cada
             // uno con su tiempo). Sin esto el nuevo reemplaza al anterior.
             combinarPoderes: !!combinarPoderes,
@@ -229,10 +252,12 @@
             restoMs: 0,
             kickEvents: [],
             kickImpactEvents: [],
+            touchEvents: [],
             timerStarted: false,
             goalResetPending: false,
             lastTouch: null,
             secondLastTouch: null,
+            lastTouchSuperKick: false,
             lastGoalTeam: null,
             goalDetected: false,
             powerImpactId: 0,
@@ -345,6 +370,7 @@
         if (distancia - jugador.r - pelota.r >= DISTANCIA_PATADA * estado.mapa.escala) return;
         const nx = distancia > 0 ? dx / distancia : 1;
         const ny = distancia > 0 ? dy / distancia : 0;
+        const pelotaAntes = { x: pelota.x, y: pelota.y, vx: pelota.vx, vy: pelota.vy };
         const superTiro = tienePoder(jugador, 'SUPER_KICK');
         const fuerza = JUGADOR.fuerzaPatada * potencia(jugador, 'SUPER_KICK', 1.8) * estado.mapa.escala;
         pelota.vx += nx * fuerza * pelota.invMass;
@@ -353,21 +379,34 @@
         jugador.vy -= ny * JUGADOR.retroceso * jugador.invMass;
         jugador.patadaUsada = true;
         jugador.pateando = false;
-        estado.kickImpactEvents.push({ player: jugador });
-        registrarToque(jugador, estado);
+        estado.kickImpactEvents.push({ player: jugador, superTiro: !!superTiro });
+        registrarToque(jugador, estado, { fuePatada: true, superTiro: !!superTiro, pelotaAntes });
         if (superTiro) {
             estado.powerImpactId += 1;
             estado.lastPowerImpact = { id: estado.powerImpactId, x: pelota.x, y: pelota.y };
         }
     }
 
-    function registrarToque(jugador, estado) {
+    function registrarToque(jugador, estado, { fuePatada = false, superTiro = false, pelotaAntes = null } = {}) {
         if (estado.lastTouch !== jugador.id) estado.secondLastTouch = estado.lastTouch;
         estado.lastTouch = jugador.id;
+        estado.lastTouchSuperKick = !!superTiro;
+        let esPrimerToque = false;
         if (estado.waitingForKickOff && !estado.golEnCurso && esEquipoQueSaca(jugador, estado)) {
             estado.waitingForKickOff = false;
             estado.timerStarted = true;
+            esPrimerToque = true;
             estado.eventosTick.push('primerToque');
+        }
+        if (estado.touchEvents) {
+            estado.touchEvents.push({
+                player: jugador,
+                fuePatada: !!fuePatada,
+                superTiro: !!superTiro,
+                esPrimerToque,
+                pelotaAntes: pelotaAntes || (estado.ball ? { x: estado.ball.x, y: estado.ball.y, vx: estado.ball.vx, vy: estado.ball.vy } : null),
+                pelotaDespues: estado.ball ? { x: estado.ball.x, y: estado.ball.y, vx: estado.ball.vx, vy: estado.ball.vy } : null
+            });
         }
     }
 
@@ -625,7 +664,10 @@
             }
         }
         players.forEach(jugador => {
-            if (chocarDiscos(jugador, ball, JUGADOR.bCoef, estado.fisicaPelota.bCoef)) registrarToque(jugador, estado);
+            const pelotaAntes = { x: ball.x, y: ball.y, vx: ball.vx, vy: ball.vy };
+            if (chocarDiscos(jugador, ball, JUGADOR.bCoef, estado.fisicaPelota.bCoef)) {
+                registrarToque(jugador, estado, { fuePatada: false, superTiro: false, pelotaAntes });
+            }
         });
         players.forEach(jugador => postes.forEach(poste => chocarDiscoFijo(jugador, poste, JUGADOR.bCoef, POSTE.bCoef)));
         postes.forEach(poste => chocarPosteBarrido(ball, poste, estado.fisicaPelota.bCoef, POSTE.bCoef, pelotaAnterior));
@@ -671,8 +713,9 @@
      * tipo que salió último, se lo cambia de lugar para no repetir.
      */
     function sacarTipoPowerUp(estado) {
-        if (!estado.bolsaPowerUps.length) {
-            const bolsa = TIPOS_POWERUP.slice();
+        const pool = (estado.tiposPowerUps && estado.tiposPowerUps.length) ? estado.tiposPowerUps : TIPOS_POWERUP;
+        if (!estado.bolsaPowerUps.length || !estado.bolsaPowerUps.every(t => pool.includes(t))) {
+            const bolsa = pool.slice();
             for (let i = bolsa.length - 1; i > 0; i -= 1) {
                 const j = Math.floor(estado.aleatorio() * (i + 1));
                 [bolsa[i], bolsa[j]] = [bolsa[j], bolsa[i]];
@@ -815,6 +858,7 @@
         estado.goalResetPending = false;
         estado.lastTouch = null;
         estado.secondLastTouch = null;
+        estado.lastTouchSuperKick = false;
     }
 
     /* ========================= */

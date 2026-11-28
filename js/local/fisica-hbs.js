@@ -555,10 +555,12 @@
             restoMs: 0,
             kickEvents: [],
             kickImpactEvents: [],
+            touchEvents: [],
             timerStarted: false,
             goalResetPending: false,
             lastTouch: null,
             secondLastTouch: null,
+            lastTouchSuperKick: false,
             lastGoalTeam: null,
             goalDetected: false,
             powerImpactId: 0,
@@ -746,13 +748,26 @@
         return true;
     }
 
-    function registrarToque(jugador, estado) {
+    function registrarToque(jugador, estado, { fuePatada = false, pelotaAntes = null } = {}) {
         if (estado.lastTouch !== jugador.id) estado.secondLastTouch = estado.lastTouch;
         estado.lastTouch = jugador.id;
+        estado.lastTouchSuperKick = false;
+        let esPrimerToque = false;
         if (estado.waitingForKickOff && !estado.golEnCurso && esEquipoQueSaca(jugador, estado)) {
             estado.waitingForKickOff = false;
             estado.timerStarted = true;
+            esPrimerToque = true;
             if (estado.eventosTick) estado.eventosTick.push('primerToque');
+        }
+        if (estado.touchEvents) {
+            estado.touchEvents.push({
+                player: jugador,
+                fuePatada: !!fuePatada,
+                superTiro: false,
+                esPrimerToque,
+                pelotaAntes: pelotaAntes || (estado.ball ? { x: estado.ball.x, y: estado.ball.y, vx: estado.ball.vx, vy: estado.ball.vy } : null),
+                pelotaDespues: estado.ball ? { x: estado.ball.x, y: estado.ball.y, vx: estado.ball.vx, vy: estado.ball.vy } : null
+            });
         }
     }
 
@@ -770,6 +785,7 @@
             const dy = pelota.y - jugador.y;
             const dist = Math.hypot(dx, dy);
             if (dist - jugador.r - pelota.r < 4) {
+                const pelotaAntes = { x: pelota.x, y: pelota.y, vx: pelota.vx, vy: pelota.vy };
                 const nx = dist > 0 ? dx / dist : 1;
                 const ny = dist > 0 ? dy / dist : 0;
                 const kickImpulse = pp.kickStrength * pelota.invMass;
@@ -780,7 +796,7 @@
                 jugador.patadaUsada = true;
                 jugador.pateando = false;
                 estado.kickImpactEvents.push({ player: jugador });
-                registrarToque(jugador, estado);
+                registrarToque(jugador, estado, { fuePatada: true, pelotaAntes });
             }
         }
 
@@ -842,7 +858,10 @@
 
         // Jugadores vs pelota
         estado.players.forEach(j => {
-            if (chocarDiscos(j, ball, activeKOBits)) registrarToque(j, estado);
+            const pelotaAntes = { x: ball.x, y: ball.y, vx: ball.vx, vy: ball.vy };
+            if (chocarDiscos(j, ball, activeKOBits)) {
+                registrarToque(j, estado, { fuePatada: false, pelotaAntes });
+            }
         });
 
         // Jugadores y pelota vs geometría del estadio
