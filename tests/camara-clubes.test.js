@@ -66,3 +66,23 @@ test('camara muestra cancha entera en 1v1..3v3 y hace zoom + minimapa en 5v5..11
     assert.ok(rect.x + rect.w <= m11.width + 0.01);
     assert.ok(rect.y + rect.h <= m11.height + 0.01);
 });
+
+test('actualizarCamaraReplay acerca el zoom en camara lenta al punto de contacto y vuelve al zoom base luego', () => {
+    const bombonera = Clubes.ESTADIOS_CLUBES.find(e => e.id === 'estadio_bombonera');
+    const m1 = mapaClubEscalado(bombonera, '1v1');
+    const foco = { x: m1.width * 0.85, y: m1.height * 0.5 };
+
+    let cam = Camara.actualizarCamaraReplay(null, m1, foco, 0, false, 16.67);
+    assert.equal(cam.zoom, 1);
+
+    for (let i = 0; i < 30; i += 1) {
+        cam = Camara.actualizarCamaraReplay(cam, m1, foco, 0, true, 16.67);
+    }
+    assert.ok(cam.zoom >= 1.5, `Camara lenta debe acercar el zoom (>= 1.5), obtenido ${cam.zoom}`);
+
+    for (let i = 0; i < 40; i += 1) {
+        cam = Camara.actualizarCamaraReplay(cam, m1, foco, 0, false, 16.67);
+    }
+    assert.ok(cam.zoom < 1.1, `Al salir de camara lenta debe volver cerca de zoom base (1), obtenido ${cam.zoom}`);
+});
+

@@ -511,6 +511,16 @@
             context.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
             context.fillStyle = ball.color || '#f8fafc';
             context.fill();
+            if (ball.ownerId) {
+                context.save();
+                context.beginPath();
+                context.arc(ball.x - ball.r * 0.25, ball.y - ball.r * 0.25, ball.r * 0.34, 0, Math.PI * 2);
+                context.fillStyle = 'rgba(255, 255, 255, 0.45)';
+                context.fill();
+                context.restore();
+            }
+            context.beginPath();
+            context.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
             context.strokeStyle = '#0f172a';
             context.lineWidth = 2 * escala;
             context.stroke();
@@ -923,13 +933,48 @@
             context.restore();
         }
 
+        function dibujarEfectoCamaraLenta(progresoImpacto) {
+            context.save();
+            context.setTransform(1, 0, 0, 1, 0, 0);
+            const cx = canvas.width / 2;
+            const cy = canvas.height / 2;
+            const rExt = Math.hypot(cx, cy);
+            const rInt = Math.min(cx, cy) * 0.62;
+            const grad = context.createRadialGradient(cx, cy, rInt, cx, cy, rExt);
+            grad.addColorStop(0, 'rgba(2, 6, 23, 0)');
+            grad.addColorStop(1, 'rgba(2, 6, 23, 0.36)');
+            context.fillStyle = grad;
+            context.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Filete dorado sutil en los bordes superior e inferior durante la cámara lenta.
+            context.fillStyle = 'rgba(253, 224, 71, 0.45)';
+            context.fillRect(0, 0, canvas.width, 3);
+            context.fillRect(0, canvas.height - 3, canvas.width, 3);
+            context.restore();
+            void progresoImpacto;
+        }
+
+        function dibujarOndaGolpeLento(ball, escala, progresoImpacto) {
+            if (!ball || !(progresoImpacto > 0 && progresoImpacto < 1)) return;
+            const alpha = Math.max(0, 1 - progresoImpacto);
+            const radio = ball.r + (18 + 38 * progresoImpacto) * escala;
+            context.save();
+            context.beginPath();
+            context.arc(ball.x, ball.y, radio, 0, Math.PI * 2);
+            context.strokeStyle = `rgba(253, 224, 71, ${0.72 * alpha})`;
+            context.lineWidth = Math.max(2, (4.5 - 2.5 * progresoImpacto) * escala);
+            context.stroke();
+            context.restore();
+        }
+
         /**
          * estado: { mapa, field, goalTop, goalBottom, postes, players, ball, activePowerUps, lastPowerImpact }
          * celebracion: { fase, ultimoGol, golTranscurridoMs, duracionGolMs } o null
          * camara (opcional): { x, y, zoom } → zoom como en HaxBall, centrado en (x, y).
          *   Sin cámara o con zoom 1 se ve la cancha entera, como siempre.
+         * opciones (opcional): { camaraLenta: boolean, impactoLento: number }
          */
-        function dibujar(estado, deltaMs, celebracion, camara = null) {
+        function dibujar(estado, deltaMs, celebracion, camara = null, opciones = null) {
             actualizarEfectosVisuales(estado, deltaMs);
             const mapaW = Math.max(1, (estado && estado.mapa && estado.mapa.width) || canvas.width);
             const baseEscala = canvas.width / mapaW;
@@ -953,10 +998,17 @@
             dibujarPowerUps(estado);
             const escala = escalaDe(estado);
             estado.players.forEach(player => dibujarJugador(player, escala));
+            (estado.extraBalls || []).forEach(eb => dibujarPelota(eb, escala));
             if (estado.ball) dibujarPelota(estado.ball, escala);
+            if (opciones && opciones.camaraLenta && estado.ball && opciones.impactoLento > 0) {
+                dibujarOndaGolpeLento(estado.ball, escala, opciones.impactoLento);
+            }
             dibujarPostes(estado);
             dibujarExplosiones();
             if (aplicarTransform) context.restore();
+            if (opciones && opciones.camaraLenta) {
+                dibujarEfectoCamaraLenta(opciones.impactoLento || 0);
+            }
             // El festejo de gol va fijo en la pantalla (no se agranda con el zoom).
             if (celebracion) dibujarCelebracionGol(celebracion);
         }
@@ -996,6 +1048,7 @@
                 postes: [],
                 players: [],
                 ball: mapa.ballPhysics ? { x: mapa.ballPhysics.x, y: mapa.ballPhysics.y, r: mapa.ballPhysics.radius, color: mapa.ballPhysics.color } : null,
+                extraBalls: [],
                 activePowerUps: [],
                 lastPowerImpact: null
             };
@@ -1014,6 +1067,7 @@
             ],
             players: [],
             ball: null,
+            extraBalls: [],
             activePowerUps: [],
             lastPowerImpact: null
         };

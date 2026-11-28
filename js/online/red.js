@@ -109,6 +109,15 @@
             return {
                 ...foto,
                 b: [pelota[0] + (pelota[3] || 0) * extra, pelota[1] + (pelota[4] || 0) * extra, pelota[2]],
+                eb: (foto.eb || []).map(eb => [
+                    eb[0],
+                    eb[1] + (eb[4] || 0) * extra,
+                    eb[2] + (eb[5] || 0) * extra,
+                    eb[3],
+                    eb[4] || 0,
+                    eb[5] || 0,
+                    eb[6]
+                ]),
                 j: foto.j.map(jugador => [
                     jugador[0],
                     jugador[1] + (jugador[6] || 0) * extra,
@@ -130,9 +139,15 @@
             const b = fotos[siguiente];
             const t = (momento - a.n) / Math.max(1, b.n - a.n);
             const anteriores = new Map(a.j.map(jugador => [jugador[0], jugador]));
+            const prevExtras = new Map((a.eb || []).map(eb => [eb[0], eb]));
             return {
                 ...b,
                 b: [interpolar(a.b[0], b.b[0], t), interpolar(a.b[1], b.b[1], t), b.b[2]],
+                eb: (b.eb || []).map(eb => {
+                    const previo = prevExtras.get(eb[0]);
+                    if (!previo) return eb;
+                    return [eb[0], interpolar(previo[1], eb[1], t), interpolar(previo[2], eb[2], t), eb[3], eb[4], eb[5], eb[6]];
+                }),
                 j: b.j.map(jugador => {
                     const previo = anteriores.get(jugador[0]);
                     if (!previo) return jugador;
@@ -199,6 +214,7 @@
         function asegurarMundo(mapa) {
             if (mundo && mundo.mapa.id === mapa.id && mundo.mapa.width === mapa.width && mundo.mapa.height === mapa.height) return;
             mundo = Fisica.crearEstado({ mapa, ladoIzquierdo: 'red', kickoffTeam: 'red', jugadores: [], powerUps: false });
+            mundo.extraBalls = [];
             previas = null;
             offsets = new Map();
         }
@@ -207,6 +223,7 @@
             const posiciones = new Map();
             mundo.players.forEach(jugador => posiciones.set(jugador.id, { x: jugador.x, y: jugador.y }));
             posiciones.set('b', { x: mundo.ball.x, y: mundo.ball.y });
+            (mundo.extraBalls || []).forEach(eb => posiciones.set(`eb:${eb.ownerId}`, { x: eb.x, y: eb.y }));
             return posiciones;
         }
 
@@ -231,6 +248,7 @@
                 niveles: { ...(jugador.niveles || {}) }
             }));
             copia.ball = { ...mundo.ball };
+            copia.extraBalls = (mundo.extraBalls || []).map(eb => ({ ...eb }));
             copia.dynamicDiscs = mundo.dynamicDiscs ? mundo.dynamicDiscs.map(d => ({ ...d })) : [];
             copia.kickEvents = [];
             copia.kickImpactEvents = [];
@@ -256,6 +274,10 @@
                 if (original) deltas.set(jugador.id, { x: jugador.x - original.x, y: jugador.y - original.y });
             });
             deltas.set('b', { x: copia.ball.x - mundo.ball.x, y: copia.ball.y - mundo.ball.y });
+            (copia.extraBalls || []).forEach(eb => {
+                const orig = (mundo.extraBalls || []).find(item => item.ownerId === eb.ownerId);
+                if (orig) deltas.set(`eb:${eb.ownerId}`, { x: eb.x - orig.x, y: eb.y - orig.y });
+            });
             cacheExtrapolacion = { clave, deltas };
             return deltas;
         }
@@ -383,8 +405,24 @@
                 pelota.cMask = mapa.ballPhysics.cMask;
                 pelota.cGroup = mapa.ballPhysics.cGroup;
             }
-            mundo.waitingForKickOff = foto.f === 'SAQUE';
-            mundo.golEnCurso = foto.f === 'GOL';
+            const bp = mapa && mapa.hbs && mapa.ballPhysics ? mapa.ballPhysics : null;
+            const Hbs = typeof global.FisicaHbs !== 'undefined' ? global.FisicaHbs : null;
+            mundo.extraBalls = (foto.eb || []).map(([ownerId, x, y, r, vx, vy, color]) => ({
+                ownerId,
+                x,
+                y,
+                r,
+                vx: vx || 0,
+                vy: vy || 0,
+                color,
+                invMass: bp ? bp.invMass : pelota.invMass,
+                bCoef: bp ? bp.bCoef : 0.4,
+                damping: bp ? bp.damping : 0.99,
+                cMask: bp ? bp.cMask : (Hbs ? Hbs.ALL_MASK : 0),
+                cGroup: bp ? bp.cGroup : (Hbs ? Hbs.MASK.ball : 0)
+            }));
+            mundo.waitingForKickOff = !foto.pr && foto.f === 'SAQUE';
+            mundo.golEnCurso = !foto.pr && foto.f === 'GOL';
             mundo.kickoffTeam = foto.s;
             mundo.activePowerUps = [];
 
@@ -427,7 +465,7 @@
             const factorJugador = Math.exp(-Math.max(0, ms) / 60);
             const factorPelota = Math.exp(-Math.max(0, ms) / 45);
             offsets.forEach((offset, clave) => {
-                const factor = clave === 'b' ? factorPelota : factorJugador;
+                const factor = (clave === 'b' || String(clave).startsWith('eb:')) ? factorPelota : factorJugador;
                 offset.x *= factor;
                 offset.y *= factor;
             });
@@ -456,7 +494,17 @@
                 const punto = puntos.get(jugador.id);
                 jugadores.set(jugador.id, { x: punto.x, y: punto.y, pateando: jugador.pateando });
             });
-            return { pelota: puntos.get('b'), jugadores };
+            const extraBalls = (mundo.extraBalls || []).map(eb => {
+                const punto = puntos.get(`eb:${eb.ownerId}`);
+                return {
+                    ownerId: eb.ownerId,
+                    x: punto ? punto.x : eb.x,
+                    y: punto ? punto.y : eb.y,
+                    r: eb.r,
+                    color: eb.color
+                };
+            });
+            return { pelota: puntos.get('b'), extraBalls, jugadores };
         }
 
         return { avanzar, proximoTick, reconciliar, estadoActual, reiniciar, get tick() { return tick; } };

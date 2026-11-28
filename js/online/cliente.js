@@ -86,7 +86,22 @@
         extrapolacion: 0,
         camara: null,
         avisoAjuste: null,
-        enGameover: false
+        enGameover: false,
+        replay: null,
+        specReplay: {
+            abierto: false,
+            replegado: false,
+            pausado: false,
+            resultadoClave: '',
+            goles: [],
+            indice: 0,
+            elapsedMs: 0,
+            enCamaraLenta: false,
+            camara: null,
+            clips: new Map(),
+            cargandoIndice: null,
+            idleClave: ''
+        }
     };
     estado.zoomNivel = leerNumeroGuardado(CLAVE_ZOOM, 0, 0, 7);
     estado.extrapolacion = leerNumeroGuardado(CLAVE_EXTRAPOLACION, 0, 0, MAX_EXTRAPOLACION);
@@ -97,6 +112,8 @@
 
     const canvas = $('cancha');
     const dibujante = DibujoOnline.crearDibujante(canvas);
+    const specReplayCanvas = $('specReplayCanvas');
+    const dibujanteSpecReplay = specReplayCanvas ? DibujoOnline.crearDibujante(specReplayCanvas) : null;
     const preview = $('previewMapa');
     const dibujantePreview = DibujoOnline.crearDibujante(preview);
     const previewPrev = $('previewMapaPrev');
@@ -116,8 +133,14 @@
     }
 
     function actualizarEstadoBody() {
+        document.body.dataset.replay = estado.replay ? '1' : '0';
+        document.body.dataset.slowmo = (estado.replay && estado.replay.enCamaraLenta) ? '1' : '0';
         if (!estado.salaId) {
             document.body.dataset.state = 'lobby';
+            return;
+        }
+        if (estado.replay && estado.replay.esHighlightPostPartido) {
+            document.body.dataset.state = 'replay';
             return;
         }
         if (estado.enGameover) {
@@ -543,6 +566,7 @@
         $('vistaSalas').hidden = true;
         $('vistaSala').hidden = false;
         document.body.classList.add('online--en-sala');
+        window.scrollTo(0, 0);
         if (!respuesta.reconectado) {
             $('chatMensajes').textContent = '';
             limpiarNotificaciones();
@@ -560,6 +584,8 @@
         estado.token = null;
         estado.sala = null;
         estado.enGameover = false;
+        limpiarReplay();
+        limpiarSpecReplay();
         reiniciarRed();
         soltarTeclas();
         limpiarNotificaciones();
@@ -626,7 +652,14 @@
         dibujarUltimoResultado(sala);
         dibujarMatchupClubes(sala);
         actualizarPreviewAvatar();
-        if (!sala.partido) reiniciarRed();
+        if (!sala.partido) {
+            if (!(estado.replay && estado.replay.esHighlightPostPartido)) {
+                limpiarReplay();
+            }
+            reiniciarRed();
+        } else {
+            actualizarUiVotosReplay();
+        }
         dibujarPreview();
         actualizarEstadoBody();
     }
@@ -852,6 +885,7 @@
             $('hudBtnDetener').disabled = !enPartido || !admin;
         }
         const enPractica = !!(enPartido && sala.partido.practica);
+        actualizarBotonPelotaPractica(linea.ultima());
         if ($('btnPractica')) {
             const btnPractica = $('btnPractica');
             btnPractica.textContent = enPractica ? 'SALIR DE MODO PRÁCTICA' : 'PRÁCTICA';
@@ -908,7 +942,9 @@
         const listaAzul = $('hudGolesListaAzul');
         if (!cont || !listaRojo || !listaAzul) return;
 
-        const goles = sala.partido ? (sala.partido.goles || []) : [];
+        const goles = sala.partido
+            ? (sala.partido.goles || [])
+            : (sala.ultimoResultado && Array.isArray(sala.ultimoResultado.goles) ? sala.ultimoResultado.goles : []);
         const txtRed = formatearGolesEquipo(goles, 'red');
         const txtBlue = formatearGolesEquipo(goles, 'blue');
         listaRojo.textContent = txtRed;
@@ -1369,9 +1405,401 @@
         });
     }
 
+    async function verGolReplayPostPartido(indice) {
+        if (!estado.sala || estado.sala.partido) return;
+        const resp = await accion('sala:verGolReplay', { indice });
+        if (resp && resp.ok && resp.clip) {
+            iniciarHighlightPostPartido(resp.clip);
+        }
+    }
+
+    function iniciarHighlightPostPartido(clip) {
+        if (!window.RepeticionOnline || !estado.sala || !clip || !Array.isArray(clip.frames) || !clip.frames.length) return;
+        soltarTeclas();
+        reiniciarRed();
+        dibujante.reiniciarEfectos();
+        clearTimeout(estado.cartelTimeout);
+        if ($('cartelGol')) $('cartelGol').hidden = true;
+        ajustarCanvas(estado.sala.mapa);
+
+        const progInicial = window.RepeticionOnline.evaluarProgresoReplay(clip, 0);
+        estado.replay = {
+            clip,
+            elapsedMs: 0,
+            serverRt: 0,
+            serverRtAt: performance.now(),
+            sonidoPatadaEmitido: progInicial.frameIndex >= clip.kickIdx,
+            sonidoGolEmitido: progInicial.frameIndex >= clip.goalIdx,
+            votos: 0,
+            requeridos: 1,
+            total: 1,
+            votantes: [],
+            enviandoVoto: false,
+            enCamaraLenta: !!progInicial.enCamaraLenta,
+            esHighlightPostPartido: true
+        };
+
+        const autorEl = $('replayAutor');
+        if (autorEl) {
+            const gol = clip.ultimoGol;
+            if (gol && gol.autor) {
+                autorEl.textContent = gol.enContra ? `· ${gol.autor} (En contra)` : `· Gol de ${gol.autor}`;
+            } else if (gol) {
+                autorEl.textContent = gol.equipo === 'red' ? '· Gol Rojo' : '· Gol Azul';
+            } else {
+                autorEl.textContent = '';
+            }
+        }
+
+        const keyEl = $('replaySkipKey');
+        const textEl = $('replaySkipText');
+        const countEl = $('replaySkipCount');
+        const btn = $('btnSkipReplay');
+        if (keyEl) keyEl.textContent = 'ESPACIO / ESC';
+        if (textEl) textEl.textContent = 'VOLVER';
+        if (countEl) countEl.hidden = true;
+        if (btn) {
+            btn.classList.remove('replay-skip-btn--votado');
+            btn.disabled = false;
+            btn.title = 'Volver al resumen del partido';
+        }
+
+        const slowBadge = $('replaySlowBadge');
+        if (slowBadge) slowBadge.hidden = !progInicial.enCamaraLenta;
+        const overlay = $('replayOverlay');
+        if (overlay) overlay.hidden = false;
+
+        mostrarPanel(false);
+    }
+
+    function cerrarHighlightPostPartido() {
+        limpiarReplay();
+        reiniciarRed();
+        dibujante.reiniciarEfectos();
+        cambiarTab('sala');
+        mostrarPanel(true);
+    }
+
+    function dibujarGolesLobby(sala) {
+        const cont = $('lobbyGoles');
+        const lista = $('lobbyGolesLista');
+        if (!cont || !lista) return;
+
+        const resultado = sala && sala.ultimoResultado;
+        const goles = resultado && Array.isArray(resultado.goles) ? resultado.goles : [];
+        lista.textContent = '';
+        if (!goles.length) {
+            cont.hidden = true;
+            return;
+        }
+
+        cont.hidden = false;
+        const enPartido = !!(sala && sala.partido);
+        goles.forEach((gol, indice) => {
+            const minTexto = gol.minuto ? `${gol.minuto}'${gol.extra ? '+' : ''}` : '';
+            const autorTexto = `${gol.autor || 'Gol'}${gol.enContra ? ' (EC)' : ''}${gol.golazo ? ' ★' : ''}`;
+            const puedeVer = !enPartido && !!gol.tieneReplay;
+            const chip = crearElemento(
+                puedeVer ? 'button' : 'span',
+                `lobby-goal-chip lobby-goal-chip--${gol.equipo === 'blue' ? 'blue' : 'red'}`
+            );
+            if (puedeVer) {
+                chip.type = 'button';
+                chip.dataset.golIndice = String(indice);
+                chip.setAttribute('aria-label', `Ver replay del gol de ${gol.autor || 'jugador'} ${minTexto}`.trim());
+                chip.title = 'Click para ver el replay del gol';
+                chip.addEventListener('click', () => verGolReplayPostPartido(indice));
+            }
+            if (minTexto) chip.appendChild(crearElemento('span', 'lobby-goal-chip__min', minTexto));
+            chip.appendChild(crearElemento('span', 'lobby-goal-chip__autor', autorTexto));
+            if (puedeVer) chip.appendChild(crearElemento('span', 'lobby-goal-chip__play', '▶'));
+            lista.appendChild(chip);
+        });
+    }
+
+    function limpiarSpecReplay() {
+        const sr = estado.specReplay;
+        sr.abierto = false;
+        sr.replegado = false;
+        sr.pausado = false;
+        sr.resultadoClave = '';
+        sr.goles = [];
+        sr.indice = 0;
+        sr.elapsedMs = 0;
+        sr.enCamaraLenta = false;
+        sr.camara = null;
+        sr.clips.clear();
+        sr.cargandoIndice = null;
+        sr.idleClave = '';
+        if (dibujanteSpecReplay) dibujanteSpecReplay.reiniciarEfectos();
+        const box = $('specReplayBox');
+        if (box) {
+            box.hidden = true;
+            box.classList.remove('spec-replay--replegado');
+        }
+        const specCol = document.querySelector('.online-equipo--spec');
+        if (specCol) {
+            specCol.classList.remove('online-equipo--spec-con-replay', 'online-equipo--spec-replegado');
+        }
+        const slow = $('specReplaySlow');
+        if (slow) slow.hidden = true;
+    }
+
+    function ajustarCanvasSpecReplay(mapa) {
+        if (!specReplayCanvas || !mapa || !mapa.width || !mapa.height) return;
+        const objetivoW = Math.min(Math.max(1, mapa.width), 520);
+        const objetivoH = Math.max(1, Math.round(mapa.height * (objetivoW / Math.max(1, mapa.width))));
+        if (specReplayCanvas.width !== objetivoW || specReplayCanvas.height !== objetivoH) {
+            specReplayCanvas.width = objetivoW;
+            specReplayCanvas.height = objetivoH;
+            specReplayCanvas.style.aspectRatio = `${mapa.width} / ${mapa.height}`;
+            if (dibujanteSpecReplay) dibujanteSpecReplay.reiniciarEfectos();
+        }
+    }
+
+    async function cargarClipSpecReplay(posicion) {
+        const sr = estado.specReplay;
+        const gol = sr.goles[posicion];
+        if (!gol || sr.clips.has(gol.indiceOriginal)) return;
+        const claveEsperada = sr.resultadoClave;
+        sr.cargandoIndice = gol.indiceOriginal;
+        const resp = await accion('sala:verGolReplay', { indice: gol.indiceOriginal });
+        if (sr.resultadoClave !== claveEsperada) return;
+        if (sr.cargandoIndice === gol.indiceOriginal) sr.cargandoIndice = null;
+        if (resp && resp.ok && resp.clip) {
+            sr.clips.set(gol.indiceOriginal, resp.clip);
+            if (sr.goles[sr.indice] && sr.goles[sr.indice].indiceOriginal === gol.indiceOriginal) {
+                sr.elapsedMs = 0;
+                sr.camara = null;
+                if (dibujanteSpecReplay) dibujanteSpecReplay.reiniciarEfectos();
+            }
+        }
+    }
+
+    function actualizarUiSpecReplay() {
+        const sr = estado.specReplay;
+        const box = $('specReplayBox');
+        const body = $('specReplayBody');
+        const toggle = $('specReplayToggle');
+        const specCol = document.querySelector('.online-equipo--spec');
+        if (!box) return;
+
+        if (!sr.abierto || !sr.goles.length) {
+            box.hidden = true;
+            if (specCol) {
+                specCol.classList.remove('online-equipo--spec-con-replay', 'online-equipo--spec-replegado');
+            }
+            return;
+        }
+
+        box.hidden = false;
+        box.classList.toggle('spec-replay--replegado', sr.replegado);
+        if (specCol) {
+            specCol.classList.add('online-equipo--spec-con-replay');
+            specCol.classList.toggle('online-equipo--spec-replegado', sr.replegado);
+        }
+        if (body) body.hidden = sr.replegado;
+        if (toggle) {
+            toggle.setAttribute('aria-expanded', sr.replegado ? 'false' : 'true');
+            toggle.textContent = sr.replegado ? 'Ver goles ▴' : 'Replegar ▾';
+            toggle.title = sr.replegado
+                ? 'Expandir repeticiones de goles del partido'
+                : 'Replegar repeticiones para ver más espectadores';
+        }
+
+        const total = sr.goles.length;
+        const nav = window.RepeticionOnline
+            ? window.RepeticionOnline.navegarIndiceGol(sr.indice, 0, total)
+            : { indice: Math.min(sr.indice, total - 1), puedeAnterior: sr.indice > 0, puedeSiguiente: sr.indice < total - 1 };
+        sr.indice = nav.indice;
+        const gol = sr.goles[sr.indice];
+        const etiqueta = window.RepeticionOnline
+            ? window.RepeticionOnline.formatearEtiquetaGol(gol, sr.indice, total)
+            : { titulo: `Gol ${sr.indice + 1}/${total}`, detalle: gol && gol.autor ? `Gol de ${gol.autor}` : 'Gol', minuto: '' };
+
+        const resumenEl = $('specReplayResumen');
+        if (resumenEl) {
+            resumenEl.textContent = sr.replegado
+                ? `Goles (${total}) · ${etiqueta.detalle}`
+                : `Repetición (${total} ${total === 1 ? 'gol' : 'goles'})`;
+        }
+
+        const badgeEl = $('specReplayBadge');
+        if (badgeEl) {
+            badgeEl.textContent = etiqueta.titulo;
+            badgeEl.className = `spec-replay__badge spec-replay__badge--${gol && gol.equipo === 'blue' ? 'blue' : 'red'}`;
+        }
+
+        const autorEl = $('specReplayAutor');
+        if (autorEl) autorEl.textContent = etiqueta.detalle;
+
+        const minEl = $('specReplayMinuto');
+        if (minEl) minEl.textContent = etiqueta.minuto;
+
+        const prevBtn = $('specReplayPrev');
+        if (prevBtn) prevBtn.disabled = !nav.puedeAnterior;
+
+        const nextBtn = $('specReplayNext');
+        if (nextBtn) nextBtn.disabled = !nav.puedeSiguiente;
+
+        const playBtn = $('specReplayPlayPause');
+        if (playBtn) {
+            playBtn.textContent = sr.pausado ? '▶' : '⏸';
+            playBtn.setAttribute('aria-label', sr.pausado ? 'Reanudar repetición' : 'Pausar repetición');
+            playBtn.title = sr.pausado ? 'Reanudar' : 'Pausar';
+        }
+
+        const slowEl = $('specReplaySlow');
+        if (slowEl) slowEl.hidden = sr.replegado || !sr.enCamaraLenta;
+    }
+
+    function cambiarGolSpecReplay(delta) {
+        const sr = estado.specReplay;
+        if (!sr.abierto || !sr.goles.length || !window.RepeticionOnline) return;
+        const nav = window.RepeticionOnline.navegarIndiceGol(sr.indice, delta, sr.goles.length);
+        if (nav.indice === sr.indice) return;
+        sr.indice = nav.indice;
+        sr.elapsedMs = 0;
+        sr.enCamaraLenta = false;
+        sr.pausado = false;
+        sr.camara = null;
+        sr.idleClave = '';
+        if (dibujanteSpecReplay) dibujanteSpecReplay.reiniciarEfectos();
+        actualizarUiSpecReplay();
+        cargarClipSpecReplay(sr.indice);
+    }
+
+    function toggleReplegarSpecReplay(forzarReplegado = null) {
+        const sr = estado.specReplay;
+        if (!sr.abierto) return;
+        sr.replegado = typeof forzarReplegado === 'boolean' ? forzarReplegado : !sr.replegado;
+        if (!sr.replegado) {
+            sr.idleClave = '';
+            cargarClipSpecReplay(sr.indice);
+        }
+        actualizarUiSpecReplay();
+    }
+
+    function dibujarSpecReplayLobby(sala) {
+        const sr = estado.specReplay;
+        const resultado = sala && sala.ultimoResultado;
+        const golesBase = resultado && Array.isArray(resultado.goles) ? resultado.goles : [];
+        const golesConClip = window.RepeticionOnline
+            ? window.RepeticionOnline.filtrarGolesConReplay(golesBase)
+            : [];
+
+        if (!sala || sala.partido || !golesConClip.length) {
+            sr.abierto = false;
+            sr.enCamaraLenta = false;
+            actualizarUiSpecReplay();
+            return;
+        }
+
+        const firmaFallback = `${golesConClip.length}|${golesConClip.map(g => `${g.indiceOriginal}:${g.minuto}:${g.autor || ''}`).join(',')}`;
+        const clave = resultado && resultado.resultadoId
+            ? `res:${resultado.resultadoId}`
+            : firmaFallback;
+
+        if (sr.resultadoClave !== clave) {
+            sr.resultadoClave = clave;
+            sr.goles = golesConClip;
+            sr.indice = 0;
+            sr.replegado = false;
+            sr.pausado = false;
+            sr.elapsedMs = 0;
+            sr.enCamaraLenta = false;
+            sr.camara = null;
+            sr.clips.clear();
+            sr.cargandoIndice = null;
+            sr.idleClave = '';
+            if (dibujanteSpecReplay) dibujanteSpecReplay.reiniciarEfectos();
+        } else {
+            sr.goles = golesConClip;
+        }
+
+        sr.abierto = true;
+        ajustarCanvasSpecReplay(sala.mapa);
+        actualizarUiSpecReplay();
+        if (!sr.replegado) {
+            cargarClipSpecReplay(sr.indice);
+        }
+    }
+
+    function actualizarSpecReplay(delta) {
+        const sr = estado.specReplay;
+        if (!dibujanteSpecReplay || !estado.sala || estado.sala.partido) return;
+        if (!sr.abierto || sr.replegado || !sr.goles.length) return;
+
+        ajustarCanvasSpecReplay(estado.sala.mapa);
+        const gol = sr.goles[sr.indice];
+        const clip = gol ? sr.clips.get(gol.indiceOriginal) : null;
+
+        if (!clip || !window.RepeticionOnline || !Array.isArray(clip.frames) || !clip.frames.length) {
+            const mapa = estado.sala.mapa;
+            const clave = `${mapa.id}|${mapa.width}|${mapa.height}`;
+            if (sr.idleClave !== clave) {
+                sr.idleClave = clave;
+                dibujanteSpecReplay.dibujar(DibujoOnline.estadoVacio(mapa), 0, null, null);
+            }
+            if (gol && sr.cargandoIndice !== gol.indiceOriginal) {
+                cargarClipSpecReplay(sr.indice);
+            }
+            return;
+        }
+
+        sr.idleClave = '';
+        if (!sr.pausado) {
+            sr.elapsedMs += delta;
+            if (sr.elapsedMs >= clip.duracionMs) {
+                sr.elapsedMs = 0;
+                sr.camara = null;
+                dibujanteSpecReplay.reiniciarEfectos();
+            }
+        }
+        sr.elapsedMs = Math.min(clip.duracionMs, Math.max(0, sr.elapsedMs));
+
+        const prog = window.RepeticionOnline.evaluarProgresoReplay(clip, sr.elapsedMs);
+        const frameInterp = window.RepeticionOnline.interpolarFrameReplay(clip.frames, prog);
+        if (sr.enCamaraLenta !== prog.enCamaraLenta) {
+            sr.enCamaraLenta = prog.enCamaraLenta;
+            const slowEl = $('specReplaySlow');
+            if (slowEl) slowEl.hidden = !prog.enCamaraLenta;
+        }
+
+        let impactoLento = 0;
+        if (prog.enCamaraLenta && prog.frameIndex >= clip.kickIdx) {
+            const spanLento = Math.max(1, clip.slowEndIdx - clip.kickIdx);
+            impactoLento = Math.min(1, Math.max(0.01, (prog.frameIndex - clip.kickIdx + prog.t) / spanLento));
+        }
+
+        const dibujoReplay = estadoParaDibujarReplay(frameInterp, clip);
+        let camara = null;
+        if (window.CamaraOnline && dibujoReplay.mapa) {
+            const foco = dibujoReplay.ball || { x: dibujoReplay.mapa.width / 2, y: dibujoReplay.mapa.height / 2 };
+            sr.camara = window.CamaraOnline.actualizarCamaraReplay(
+                sr.camara,
+                dibujoReplay.mapa,
+                foco,
+                1,
+                prog.enCamaraLenta,
+                sr.pausado ? 0 : delta
+            );
+            camara = sr.camara;
+        }
+        dibujanteSpecReplay.dibujar(
+            dibujoReplay,
+            sr.pausado ? 0 : delta * prog.velocidad,
+            null,
+            camara,
+            { camaraLenta: prog.enCamaraLenta, impactoLento }
+        );
+    }
+
     function dibujarUltimoResultado(sala) {
         const resultado = sala.ultimoResultado;
         renderizarTarjetasPuntuacion(resultado && resultado.puntuacion);
+        dibujarGolesLobby(sala);
+        dibujarSpecReplayLobby(sala);
     }
 
     /* ========================= */
@@ -1558,6 +1986,15 @@
 
     if ($('hudBtnPausa')) $('hudBtnPausa').addEventListener('click', () => accion('partido:pausa'));
     if ($('hudBtnDetener')) $('hudBtnDetener').addEventListener('click', () => accion('partido:detener'));
+    if ($('hudBtnPelota')) {
+        $('hudBtnPelota').addEventListener('click', evento => {
+            evento.currentTarget.blur();
+            if (!estado.sala || !estado.sala.partido || !estado.sala.partido.practica) return;
+            const yo = estado.sala.jugadores.find(j => j.id === estado.tuId);
+            if (!yo || (yo.equipo !== 'red' && yo.equipo !== 'blue')) return;
+            accion('practica:pelota');
+        });
+    }
     if ($('btnPractica')) {
         $('btnPractica').addEventListener('click', () => {
             if (estado.sala && estado.sala.partido && estado.sala.partido.practica) {
@@ -1565,6 +2002,24 @@
             } else {
                 accion('partido:iniciar', { practica: true });
             }
+        });
+    }
+    if ($('specReplayPrev')) $('specReplayPrev').addEventListener('click', () => cambiarGolSpecReplay(-1));
+    if ($('specReplayNext')) $('specReplayNext').addEventListener('click', () => cambiarGolSpecReplay(1));
+    if ($('specReplayToggle')) $('specReplayToggle').addEventListener('click', () => toggleReplegarSpecReplay());
+    if ($('specReplayPlayPause')) {
+        $('specReplayPlayPause').addEventListener('click', () => {
+            const sr = estado.specReplay;
+            if (!sr.abierto) return;
+            sr.pausado = !sr.pausado;
+            actualizarUiSpecReplay();
+        });
+    }
+    if ($('specReplayAmpliar')) {
+        $('specReplayAmpliar').addEventListener('click', () => {
+            const sr = estado.specReplay;
+            const gol = sr.goles[sr.indice];
+            if (gol) verGolReplayPostPartido(gol.indiceOriginal);
         });
     }
     $('iniciarDetener').addEventListener('click', async () => {
@@ -1597,7 +2052,13 @@
         actualizarEstadoBody();
     }
 
-    $('botonPanel').addEventListener('click', () => mostrarPanel(!estado.panelVisible));
+    $('botonPanel').addEventListener('click', () => {
+        if (estado.replay && estado.replay.esHighlightPostPartido) {
+            cerrarHighlightPostPartido();
+            return;
+        }
+        mostrarPanel(!estado.panelVisible);
+    });
 
     /* ========================= */
     /* CHAT                      */
@@ -1667,9 +2128,15 @@
     }
 
     function mostrarNotificacionJugada(notif) {
+        if (estado.sala && estado.sala.partido && estado.sala.partido.practica) return;
         const cont = $('notificacionesPartido');
         if (!cont || !notif || !notif.tipo) return;
         if (!['atajada', 'asistencia', 'tiro', 'gol', 'golazo'].includes(notif.tipo)) return;
+
+        // Cuando se convierte un gol, no mostrar 2 notificaciones: limpiar cualquier aviso previo.
+        if (notif.tipo === 'gol' || notif.tipo === 'golazo') {
+            cont.textContent = '';
+        }
 
         const iconoTipo = notif.tipo === 'atajada'
             ? 'guantes'
@@ -1705,6 +2172,7 @@
 
     socket.on('partido:inicio', ({ mapa }) => {
         estado.enGameover = false;
+        limpiarReplay();
         if (estado.sala) estado.sala.mapa = mapa;
         ajustarCanvas(mapa);
         dibujante.reiniciarEfectos();
@@ -1719,8 +2187,161 @@
         prediccion.reiniciar();
     }
 
+    function limpiarReplay() {
+        const habia = !!estado.replay;
+        estado.replay = null;
+        const overlay = $('replayOverlay');
+        if (overlay) overlay.hidden = true;
+        const slowBadge = $('replaySlowBadge');
+        if (slowBadge) slowBadge.hidden = true;
+        const keyEl = $('replaySkipKey');
+        if (keyEl) keyEl.textContent = 'ESPACIO';
+        const textEl = $('replaySkipText');
+        if (textEl) textEl.textContent = 'SALTAR';
+        const countEl = $('replaySkipCount');
+        if (countEl) countEl.hidden = false;
+        const btn = $('btnSkipReplay');
+        if (btn) {
+            btn.classList.remove('replay-skip-btn--votado');
+            btn.disabled = false;
+        }
+        if (habia) {
+            dibujante.reiniciarEfectos();
+            actualizarEstadoBody();
+        }
+    }
+
+    function actualizarUiVotosReplay() {
+        const rep = estado.replay;
+        const btn = $('btnSkipReplay');
+        const countEl = $('replaySkipCount');
+        if (!rep || rep.esHighlightPostPartido || !btn || !countEl) return;
+
+        countEl.hidden = false;
+        const elegible = window.RepeticionOnline && estado.sala
+            ? window.RepeticionOnline.esElegibleSkip(estado.sala.jugadores, estado.tuId)
+            : true;
+        const yaVoto = Array.isArray(rep.votantes) && rep.votantes.includes(estado.tuId);
+        const votos = Math.max(0, Number(rep.votos) || 0);
+        const requeridos = Math.max(1, Number(rep.requeridos) || 1);
+
+        countEl.textContent = `${yaVoto ? '✓ ' : ''}${votos}/${requeridos}`;
+        btn.classList.toggle('replay-skip-btn--votado', yaVoto);
+        btn.disabled = !elegible || yaVoto || !!rep.enviandoVoto;
+        btn.title = !elegible
+            ? 'Solo los jugadores en cancha pueden votar para saltar'
+            : (yaVoto ? 'Ya votaste para saltar el replay' : 'Presioná Espacio o click para saltar el replay');
+    }
+
+    async function votarSkipReplay() {
+        const rep = estado.replay;
+        if (!rep) return;
+        if (rep.esHighlightPostPartido) {
+            cerrarHighlightPostPartido();
+            return;
+        }
+        if (rep.enviandoVoto) return;
+        if (Array.isArray(rep.votantes) && rep.votantes.includes(estado.tuId)) return;
+        if (window.RepeticionOnline && estado.sala && !window.RepeticionOnline.esElegibleSkip(estado.sala.jugadores, estado.tuId)) {
+            return;
+        }
+        rep.enviandoVoto = true;
+        actualizarUiVotosReplay();
+        const resp = await pedir('partido:skipReplay', {});
+        if (!estado.replay || estado.replay !== rep) return;
+        rep.enviandoVoto = false;
+        if (resp && resp.ok) {
+            rep.votos = Number(resp.votos) || rep.votos;
+            rep.requeridos = Number(resp.requeridos) || rep.requeridos;
+            rep.total = Number(resp.total) || rep.total;
+            if (Array.isArray(resp.votantes)) rep.votantes = resp.votantes;
+            if (!resp.votantes || !resp.votantes.includes(estado.tuId)) {
+                rep.votantes = [...(rep.votantes || []), estado.tuId];
+            }
+        }
+        actualizarUiVotosReplay();
+    }
+
+    socket.on('partido:repeticion', data => {
+        if (!window.RepeticionOnline || !data || !data.clip || !Array.isArray(data.clip.frames) || !data.clip.frames.length) {
+            return;
+        }
+        soltarTeclas();
+        reiniciarRed();
+        dibujante.reiniciarEfectos();
+        clearTimeout(estado.cartelTimeout);
+        if ($('cartelGol')) $('cartelGol').hidden = true;
+
+        const elapsedMs = Math.max(0, Number(data.elapsedMs) || 0);
+        const clip = data.clip;
+        const progInicial = window.RepeticionOnline.evaluarProgresoReplay(clip, elapsedMs);
+
+        estado.replay = {
+            clip,
+            elapsedMs,
+            serverRt: elapsedMs,
+            serverRtAt: performance.now(),
+            sonidoPatadaEmitido: progInicial.frameIndex >= clip.kickIdx,
+            sonidoGolEmitido: progInicial.frameIndex >= clip.goalIdx,
+            votos: Number(data.votos) || 0,
+            requeridos: Number(data.requeridos) || 1,
+            total: Number(data.total) || 1,
+            votantes: Array.isArray(data.votantes) ? data.votantes : [],
+            enviandoVoto: false,
+            enCamaraLenta: !!progInicial.enCamaraLenta,
+            esHighlightPostPartido: false
+        };
+
+        const autorEl = $('replayAutor');
+        if (autorEl) {
+            const gol = clip.ultimoGol;
+            if (gol && gol.autor) {
+                autorEl.textContent = gol.enContra ? `· ${gol.autor} (En contra)` : `· Gol de ${gol.autor}`;
+            } else if (gol) {
+                autorEl.textContent = gol.equipo === 'red' ? '· Gol Rojo' : '· Gol Azul';
+            } else {
+                autorEl.textContent = '';
+            }
+        }
+
+        const keyEl = $('replaySkipKey');
+        if (keyEl) keyEl.textContent = 'ESPACIO';
+        const textEl = $('replaySkipText');
+        if (textEl) textEl.textContent = 'SALTAR';
+        const countEl = $('replaySkipCount');
+        if (countEl) countEl.hidden = false;
+
+        const slowBadge = $('replaySlowBadge');
+        if (slowBadge) slowBadge.hidden = !progInicial.enCamaraLenta;
+        const overlay = $('replayOverlay');
+        if (overlay) overlay.hidden = false;
+        actualizarUiVotosReplay();
+        actualizarEstadoBody();
+    });
+
+    socket.on('partido:replayVotos', data => {
+        if (!estado.replay || !data) return;
+        estado.replay.votos = Number(data.votos) || 0;
+        estado.replay.requeridos = Number(data.requeridos) || 1;
+        estado.replay.total = Number(data.total) || 1;
+        estado.replay.votantes = Array.isArray(data.votantes) ? data.votantes : [];
+        actualizarUiVotosReplay();
+    });
+
+    socket.on('partido:repeticionFin', () => {
+        limpiarReplay();
+        reiniciarRed();
+        dibujante.reiniciarEfectos();
+    });
+
     socket.on('partido:estado', foto => {
         linea.agregar(foto);
+        if (estado.replay && foto && foto.f === 'REPETICION' && Number.isFinite(foto.rt)) {
+            estado.replay.serverRt = foto.rt;
+            estado.replay.serverRtAt = performance.now();
+            prediccion.reiniciar();
+            return;
+        }
         // Si jugás, la cancha entera se adelanta al presente desde lo que dice el
         // servidor (ver red.js). Los espectadores miran la foto interpolada.
         const sala = estado.sala;
@@ -1735,6 +2356,7 @@
 
     socket.on('partido:detenido', () => {
         estado.enGameover = false;
+        limpiarReplay();
         reiniciarRed();
         cambiarTab('sala');
         mostrarPanel(true);
@@ -1755,17 +2377,19 @@
     }
 
     socket.on('partido:evento', evento => {
-        // El gol se festeja dentro de la cancha (mismo dibujo que el arcade).
+        const enPractica = !!(estado.sala && estado.sala.partido && estado.sala.partido.practica);
+        // El gol se festeja dentro de la cancha (mismo dibujo que el arcade), nunca en práctica.
         if (evento.tipo === 'patada') sonar('patada');
-        else if (evento.tipo === 'gol') sonar('gol');
-        else if (evento.tipo === 'saque') sonar('silbato');
-        if (evento.tipo === 'tiempoExtra') {
+        else if (evento.tipo === 'gol' && !enPractica) sonar('gol');
+        else if (evento.tipo === 'saque' && !enPractica) sonar('silbato');
+        if (evento.tipo === 'tiempoExtra' && !enPractica) {
             mostrarCartel('¡TIEMPO EXTRA!', null, 2000);
         }
     });
 
     socket.on('partido:fin', evento => {
         estado.enGameover = true;
+        limpiarReplay();
         actualizarEstadoBody();
         const texto = evento.ganador ? `¡GANÓ ${NOMBRE_EQUIPO[evento.ganador].toUpperCase()}!` : '¡EMPATE!';
         const mvpTexto = evento.puntuacion && evento.puntuacion.mvpNombre
@@ -1783,9 +2407,10 @@
 
     function textoFase(foto) {
         if (foto.p) return 'PAUSA';
-        if (foto.f === 'SAQUE') return foto.pr ? 'PRÁCTICA · SAQUE' : `SAQUE ${foto.s === 'red' ? 'ROJO' : 'AZUL'}`;
-        if (foto.f === 'GOL') return '¡GOL!';
+        if (foto.f === 'REPETICION') return 'REPLAY';
         if (foto.pr) return 'PRÁCTICA';
+        if (foto.f === 'SAQUE') return `SAQUE ${foto.s === 'red' ? 'ROJO' : 'AZUL'}`;
+        if (foto.f === 'GOL') return '¡GOL!';
         if (foto.f === 'TIEMPO_EXTRA' || foto.x) return 'TIEMPO EXTRA';
         return 'EN VIVO';
     }
@@ -1802,11 +2427,46 @@
         el.textContent = texto;
     }
 
+    let ultimaClaveBotonPelota = '';
+    function actualizarBotonPelotaPractica(foto) {
+        const btn = $('hudBtnPelota');
+        if (!btn) return;
+        const sala = estado.sala;
+        const enPractica = !!(sala && sala.partido && sala.partido.practica);
+        const yo = sala && Array.isArray(sala.jugadores) ? sala.jugadores.find(j => j.id === estado.tuId) : null;
+        const enCancha = !!(yo && (yo.equipo === 'red' || yo.equipo === 'blue'));
+        const visible = enPractica && enCancha;
+        const miPelota = visible && foto && Array.isArray(foto.eb)
+            ? foto.eb.find(eb => eb[0] === estado.tuId)
+            : null;
+        const colorPelota = miPelota ? (miPelota[6] || '#38bdf8') : '#38bdf8';
+        const clave = `${visible ? 1 : 0}|${miPelota ? 1 : 0}|${colorPelota}`;
+        if (ultimaClaveBotonPelota === clave) return;
+        ultimaClaveBotonPelota = clave;
+
+        btn.hidden = !visible;
+        btn.dataset.hasBall = miPelota ? '1' : '0';
+        btn.style.setProperty('--ball-color', colorPelota);
+        const textoEl = $('hudBtnPelotaTexto');
+        if (textoEl) {
+            textoEl.textContent = miPelota ? 'Traer pelota (Q)' : 'Invocar pelota (Q)';
+        }
+        btn.title = miPelota
+            ? 'Teletransportar tu pelota de vuelta a tus pies (Q)'
+            : 'Invocar tu pelota personal en tus pies (Q)';
+    }
+
     function actualizarHud(foto) {
-        ponerTextoHud('golesRojo', foto ? foto.m[0] : (estado.sala && estado.sala.partido ? estado.sala.partido.marcador.red : 0));
-        ponerTextoHud('golesAzul', foto ? foto.m[1] : (estado.sala && estado.sala.partido ? estado.sala.partido.marcador.blue : 0));
+        const fallbackMarcador = estado.sala && estado.sala.partido
+            ? estado.sala.partido.marcador
+            : (estado.sala && estado.sala.ultimoResultado && estado.sala.ultimoResultado.marcador
+                ? estado.sala.ultimoResultado.marcador
+                : { red: 0, blue: 0 });
+        ponerTextoHud('golesRojo', foto ? foto.m[0] : (fallbackMarcador.red || 0));
+        ponerTextoHud('golesAzul', foto ? foto.m[1] : (fallbackMarcador.blue || 0));
         ponerTextoHud('reloj', foto ? formatearTiempo(foto.t, !!foto.pr) : '--:--');
-        ponerTextoHud('faseTexto', foto ? textoFase(foto) : (estado.sala && estado.sala.partido ? '' : 'ESPERANDO'));
+        ponerTextoHud('faseTexto', foto ? textoFase(foto) : (estado.sala && estado.sala.partido ? '' : (estado.sala && estado.sala.ultimoResultado ? 'FINAL' : 'ESPERANDO')));
+        actualizarBotonPelotaPractica(foto);
     }
 
     // Arma el "estado" que esperan las funciones de dibujo de develop a partir de la foto del servidor.
@@ -1834,6 +2494,10 @@
         base.ball = pelotaPredicha
             ? { x: pelotaPredicha.x, y: pelotaPredicha.y, r: foto.b[2], color: colorPelota }
             : { x: foto.b[0], y: foto.b[1], r: foto.b[2], color: colorPelota };
+        const extrasPred = prediccionActual && Array.isArray(prediccionActual.extraBalls) ? prediccionActual.extraBalls : null;
+        base.extraBalls = extrasPred
+            ? extrasPred.map(eb => ({ ...eb }))
+            : (foto.eb || []).map(([ownerId, x, y, r, _vx, _vy, color]) => ({ ownerId, x, y, r, color }));
         base.activePowerUps = (foto.u || []).map(([x, y, type, r]) => ({ x, y, type, r }));
         base.lastPowerImpact = foto.i ? { id: foto.i[0], x: foto.i[1], y: foto.i[2] } : null;
         base.players = foto.j.map(([id, x, y, r, pateando, power]) => {
@@ -1865,13 +2529,69 @@
         return base;
     }
 
+    function estadoParaDibujarReplay(frameInterp, clip) {
+        const sala = estado.sala;
+        const base = DibujoOnline.estadoVacio(sala.mapa);
+        if (!frameInterp) return base;
+
+        const metaMap = new Map();
+        (clip && Array.isArray(clip.jugadoresMeta) ? clip.jugadoresMeta : []).forEach(j => metaMap.set(j.id, j));
+        (sala.jugadores || []).forEach(j => {
+            if (!metaMap.has(j.id)) metaMap.set(j.id, j);
+        });
+
+        const numeros = new Map();
+        const listaJugadores = Array.from(metaMap.values());
+        ['red', 'blue'].forEach(equipo => listaJugadores
+            .filter(jugador => jugador.equipo === equipo)
+            .forEach((jugador, indice) => numeros.set(jugador.id, indice + 1)));
+
+        const clubesCfg = (sala.config && sala.config.clubes) || { red: 'boca', blue: 'river' };
+        const clubRed = window.ClubesLaChaula ? window.ClubesLaChaula.obtenerClub(clubesCfg.red) : null;
+        const clubBlue = window.ClubesLaChaula ? window.ClubesLaChaula.obtenerClub(clubesCfg.blue) : null;
+        const enPractica = !!(sala.partido && sala.partido.practica);
+        const clubPractica = (window.ClubesLaChaula && window.ClubesLaChaula.CAMISETA_PRACTICA) || {
+            primario: '#ffffff',
+            secundario: '#e2e8f0',
+            patron: 'solida'
+        };
+
+        const colorPelota = (sala.mapa && sala.mapa.ballPhysics && sala.mapa.ballPhysics.color) || null;
+        base.ball = frameInterp.b
+            ? { x: frameInterp.b[0], y: frameInterp.b[1], r: frameInterp.b[2], color: colorPelota }
+            : null;
+        base.activePowerUps = (frameInterp.u || []).map(([x, y, type, r]) => ({ x, y, type, r }));
+        base.lastPowerImpact = frameInterp.i ? { id: frameInterp.i[0], x: frameInterp.i[1], y: frameInterp.i[2] } : null;
+        base.players = (frameInterp.j || []).map(([id, x, y, r, pateando, power]) => {
+            const jugador = metaMap.get(id) || {};
+            return {
+                id, x, y, r,
+                equipo: jugador.equipo,
+                practica: enPractica,
+                club: enPractica ? clubPractica : (jugador.equipo === 'red' ? clubRed : (jugador.equipo === 'blue' ? clubBlue : null)),
+                pateando: !!pateando,
+                activePower: power ? String(power).split('+')[0] : null,
+                poderes: power ? Array.from(new Set(String(power).split('+'))) : [],
+                niveles: power ? String(power).split('+').reduce((cuenta, tipo) => {
+                    cuenta[tipo] = (cuenta[tipo] || 0) + 1;
+                    return cuenta;
+                }, {}) : {},
+                escribiendo: false,
+                nombre: jugador.nombre || '',
+                numero: jugador.avatar || numeros.get(id) || '',
+                esVos: id === estado.tuId
+            };
+        });
+        return base;
+    }
+
     function celebracionDe(foto) {
-        if (!foto || foto.f !== 'GOL' || !foto.ug) return null;
+        if (!foto || foto.pr || foto.f !== 'GOL' || !foto.ug) return null;
         const [equipo, autor, enContra] = foto.ug;
         return {
             fase: 'GOL',
             golTranscurridoMs: foto.g || 0,
-            duracionGolMs: 2500,
+            duracionGolMs: 1800,
             ultimoGol: { equipo, jugadorId: autor || null, enContra: !!enContra }
         };
     }
@@ -1882,6 +2602,92 @@
         if (estado.sala) {
             const ultima = linea.ultima();
             linea.avanzar(delta);
+
+            if (estado.replay && window.RepeticionOnline) {
+                const rep = estado.replay;
+                const pausado = !rep.esHighlightPostPartido && (!!(ultima && ultima.p) || !!(estado.sala.partido && estado.sala.partido.pausado));
+                if (rep.esHighlightPostPartido) {
+                    rep.elapsedMs += delta;
+                    if (rep.elapsedMs >= rep.clip.duracionMs) {
+                        cerrarHighlightPostPartido();
+                        requestAnimationFrame(bucle);
+                        return;
+                    }
+                } else if (pausado) {
+                    rep.elapsedMs = rep.serverRt;
+                } else {
+                    rep.elapsedMs += delta;
+                    const esperadoRt = rep.serverRt + Math.min(Math.max(ahora - rep.serverRtAt, 0), 150);
+                    const desvio = esperadoRt - rep.elapsedMs;
+                    if (Math.abs(desvio) > 120) {
+                        rep.elapsedMs += desvio * 0.35;
+                    }
+                }
+                rep.elapsedMs = Math.min(rep.clip.duracionMs, Math.max(0, rep.elapsedMs));
+
+                const prog = window.RepeticionOnline.evaluarProgresoReplay(rep.clip, rep.elapsedMs);
+                const frameInterp = window.RepeticionOnline.interpolarFrameReplay(rep.clip.frames, prog);
+
+                if (!pausado && !rep.sonidoPatadaEmitido && prog.frameIndex >= rep.clip.kickIdx) {
+                    rep.sonidoPatadaEmitido = true;
+                    sonar('patada');
+                }
+                if (!pausado && !rep.sonidoGolEmitido && prog.frameIndex >= rep.clip.goalIdx) {
+                    rep.sonidoGolEmitido = true;
+                    sonar('gol');
+                }
+
+                if (rep.enCamaraLenta !== prog.enCamaraLenta) {
+                    rep.enCamaraLenta = prog.enCamaraLenta;
+                    const slowBadge = $('replaySlowBadge');
+                    if (slowBadge) slowBadge.hidden = !prog.enCamaraLenta;
+                    actualizarEstadoBody();
+                }
+
+                let impactoLento = 0;
+                if (prog.enCamaraLenta && prog.frameIndex >= rep.clip.kickIdx) {
+                    const spanLento = Math.max(1, rep.clip.slowEndIdx - rep.clip.kickIdx);
+                    impactoLento = Math.min(1, Math.max(0.01, (prog.frameIndex - rep.clip.kickIdx + prog.t) / spanLento));
+                }
+
+                const dibujoReplay = estadoParaDibujarReplay(frameInterp, rep.clip);
+                const camara = actualizarCamara(dibujoReplay, delta, true, prog.enCamaraLenta);
+                dibujante.dibujar(
+                    dibujoReplay,
+                    pausado ? 0 : delta * prog.velocidad,
+                    null,
+                    camara,
+                    { camaraLenta: prog.enCamaraLenta, impactoLento }
+                );
+                dibujarMinimapa(dibujoReplay, camara);
+                dibujarAvisoAjuste(delta);
+                estado.ultimoCanchaIdleClave = '';
+                const marcadorFinal = estado.sala.ultimoResultado && estado.sala.ultimoResultado.marcador
+                    ? estado.sala.ultimoResultado.marcador
+                    : { red: 0, blue: 0 };
+                const fotoHud = rep.esHighlightPostPartido
+                    ? {
+                        f: 'REPETICION',
+                        p: false,
+                        m: [marcadorFinal.red || 0, marcadorFinal.blue || 0],
+                        t: 0,
+                        pr: 0
+                    }
+                    : (ultima && ultima.f === 'REPETICION'
+                        ? ultima
+                        : {
+                            f: 'REPETICION',
+                            p: pausado,
+                            m: ultima ? ultima.m : [0, 0],
+                            t: ultima ? ultima.t : 0,
+                            pr: ultima ? ultima.pr : (estado.sala.partido && estado.sala.partido.practica ? 1 : 0)
+                        });
+                actualizarHud(fotoHud);
+                dibujarPreview();
+                requestAnimationFrame(bucle);
+                return;
+            }
+
             // Tu jugador avanza acá mismo, al instante; cada medio segundo se manda un "ancla".
             if (prediccion.avanzar(delta, estado.bits, !ultima || !!ultima.p) && ultima) mandarTeclas();
             // Jugando se dibuja la cancha predicha (todo en el presente) con los datos de la
@@ -1905,6 +2711,9 @@
                 const mini = $('minimapa');
                 if (mini) mini.hidden = true;
             }
+            if (estado.panelVisible && estado.tabActiva === 'sala' && !estado.sala.partido && estado.specReplay.abierto && !estado.specReplay.replegado) {
+                actualizarSpecReplay(delta);
+            }
             actualizarHud(ultima);
             dibujarPreview();
         }
@@ -1919,19 +2728,25 @@
         return window.CamaraOnline ? window.CamaraOnline.zoomDe(mapa, estado.zoomNivel) : 1;
     }
 
-    function actualizarCamara(dibujo, delta) {
+    function actualizarCamara(dibujo, delta, seguirPelota = false, enCamaraLenta = false) {
         if (!window.CamaraOnline) return null;
-        const propio = dibujo.players.find(jugador => jugador.esVos);
+        const propio = seguirPelota ? null : dibujo.players.find(jugador => jugador.esVos);
         const foco = propio || dibujo.ball || { x: dibujo.mapa.width / 2, y: dibujo.mapa.height / 2 };
-        const camara = window.CamaraOnline.actualizarCamara(estado.camara, dibujo.mapa, foco, estado.zoomNivel, delta);
+        const camara = seguirPelota
+            ? window.CamaraOnline.actualizarCamaraReplay(estado.camara, dibujo.mapa, foco, estado.zoomNivel, enCamaraLenta, delta)
+            : window.CamaraOnline.actualizarCamara(estado.camara, dibujo.mapa, foco, estado.zoomNivel, delta);
         estado.camara = camara;
+        const zoomTxt = camara ? camara.zoom.toFixed(2) : '1.00';
+        if (document.body.dataset.zoom !== zoomTxt) {
+            document.body.dataset.zoom = zoomTxt;
+        }
         return camara;
     }
 
     function dibujarMinimapa(dibujo, camara) {
         const mini = $('minimapa');
         if (!mini || !window.CamaraOnline) return;
-        const mostrar = !!(estado.sala && estado.sala.partido && !estado.panelVisible && window.CamaraOnline.debeMostrarMinimapa(camara));
+        const mostrar = !!(!estado.replay && estado.sala && estado.sala.partido && !estado.panelVisible && window.CamaraOnline.debeMostrarMinimapa(camara));
         if (!mostrar) {
             mini.hidden = true;
             return;
@@ -2024,6 +2839,17 @@
             ctx.stroke();
         });
 
+        // Pelotas extra de práctica
+        (dibujo.extraBalls || []).forEach(eb => {
+            ctx.beginPath();
+            ctx.arc(eb.x * sx, eb.y * sy, 2.8, 0, Math.PI * 2);
+            ctx.fillStyle = eb.color || '#38bdf8';
+            ctx.fill();
+            ctx.strokeStyle = '#0f172a';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+        });
+
         // Pelota
         if (dibujo.ball) {
             ctx.beginPath();
@@ -2112,7 +2938,9 @@
         const enTexto = escribiendo(evento.target);
         if (evento.code === 'Escape') {
             if (enTexto) evento.target.blur();
-            else {
+            else if (estado.replay && estado.replay.esHighlightPostPartido) {
+                cerrarHighlightPostPartido();
+            } else {
                 const proximoVisible = !estado.panelVisible;
                 mostrarPanel(proximoVisible);
                 if (estado.sala && estado.sala.partido && soyAdmin()) {
@@ -2136,6 +2964,19 @@
         }
         if (evento.code === 'KeyP' && !evento.repeat && soyAdmin() && estado.sala.partido) {
             accion('partido:pausa');
+            return;
+        }
+        if (evento.code === 'KeyQ' && !evento.repeat && estado.sala && estado.sala.partido && estado.sala.partido.practica) {
+            const yo = estado.sala.jugadores.find(j => j.id === estado.tuId);
+            if (yo && (yo.equipo === 'red' || yo.equipo === 'blue')) {
+                evento.preventDefault();
+                accion('practica:pelota');
+            }
+            return;
+        }
+        if (estado.replay && evento.code === 'Space') {
+            evento.preventDefault();
+            if (!evento.repeat) votarSkipReplay();
             return;
         }
         if (BITS_TECLA[evento.code]) {
@@ -2205,6 +3046,9 @@
         const nombre = $('nombreJugador').value.trim();
         if (nombre) localStorage.setItem(CLAVE_NOMBRE, nombre);
     });
+    if ($('btnSkipReplay')) {
+        $('btnSkipReplay').addEventListener('click', () => votarSkipReplay());
+    }
     actualizarEstadoBody();
     cargarCatalogoHbs();
     requestAnimationFrame(bucle);

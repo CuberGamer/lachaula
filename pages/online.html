@@ -114,6 +114,12 @@
         <button id="salirSala" class="ssf-button ssf-button-danger online-exit-btn online-exit-btn--top" type="button" aria-label="Salir de la sala">Exit</button>
         <section class="online-juego">
             <section class="broadcast-hud" aria-label="Marcador del partido" aria-live="polite">
+                <div class="broadcast-left">
+                    <button id="hudBtnPelota" class="hud-action-btn hud-action-btn--ball" type="button" data-testid="hud-btn-pelota" title="Invocar o traer tu pelota de práctica a tus pies (Q)" hidden>
+                        <span class="hud-ball-dot" aria-hidden="true"></span>
+                        <span id="hudBtnPelotaTexto">Invocar pelota (Q)</span>
+                    </button>
+                </div>
                 <div class="broadcast-main">
                     <div class="broadcast-bar">
                         <div class="broadcast-team broadcast-team--red">
@@ -152,6 +158,27 @@
 
                 <!-- Notificaciones de jugadas y puntuación en vivo -->
                 <div id="notificacionesPartido" class="online-notificaciones" aria-live="polite"></div>
+
+                <!-- HUD de repetición de gol -->
+                <div id="replayOverlay" class="replay-overlay" data-testid="replay-overlay" hidden>
+                    <div class="replay-top">
+                        <div class="replay-pill">
+                            <span class="replay-dot" aria-hidden="true"></span>
+                            <span class="replay-label">REPLAY</span>
+                            <span id="replayAutor" class="replay-autor"></span>
+                        </div>
+                        <div id="replaySlowBadge" class="replay-slow-badge" hidden>
+                            <span>CÁMARA LENTA 0.25x</span>
+                        </div>
+                    </div>
+                    <div class="replay-bottom-bar">
+                        <button id="btnSkipReplay" class="replay-skip-btn" type="button" data-testid="btn-skip-replay">
+                            <span id="replaySkipKey" class="replay-skip-key">ESPACIO</span>
+                            <span id="replaySkipText" class="replay-skip-text">SALTAR</span>
+                            <span id="replaySkipCount" class="replay-skip-count">0/1</span>
+                        </button>
+                    </div>
+                </div>
 
                 <div id="panelSala" class="online-panel online-panel--tabs">
                     <header class="online-panel__topbar">
@@ -226,6 +253,34 @@
                                 <h3>ESPECTADORES <span data-cuenta></span></h3>
                                 <ul data-lista></ul>
                                 <button class="online-unirme" data-unirme="" type="button">Unirme</button>
+                                <section id="specReplayBox" class="spec-replay" data-testid="spec-replay" aria-label="Repeticiones de goles del partido" hidden>
+                                    <header class="spec-replay__head">
+                                        <div class="spec-replay__titlewrap">
+                                            <span class="spec-replay__dot" aria-hidden="true"></span>
+                                            <span id="specReplayResumen" class="spec-replay__resumen">Goles (0)</span>
+                                            <span id="specReplaySlow" class="spec-replay__slow" hidden>0.25x</span>
+                                        </div>
+                                        <div class="spec-replay__head-actions">
+                                            <button id="specReplayAmpliar" class="spec-replay__iconbtn" type="button" title="Ver en pantalla completa" aria-label="Ver repetición en pantalla completa">⤢</button>
+                                            <button id="specReplayToggle" class="spec-replay__toggle" type="button" aria-expanded="true" aria-controls="specReplayBody" data-testid="spec-replay-toggle">Replegar ▾</button>
+                                        </div>
+                                    </header>
+                                    <div id="specReplayBody" class="spec-replay__body">
+                                        <div class="spec-replay__meta">
+                                            <span id="specReplayBadge" class="spec-replay__badge">Gol 1/1</span>
+                                            <span id="specReplayAutor" class="spec-replay__autor">—</span>
+                                            <span id="specReplayMinuto" class="spec-replay__minuto"></span>
+                                        </div>
+                                        <div class="spec-replay__stage">
+                                            <canvas id="specReplayCanvas" data-testid="spec-replay-canvas"></canvas>
+                                        </div>
+                                        <div class="spec-replay__controls">
+                                            <button id="specReplayPrev" class="spec-replay__nav" type="button" aria-label="Gol anterior" data-testid="spec-replay-prev">◀ Anterior</button>
+                                            <button id="specReplayPlayPause" class="spec-replay__playbtn" type="button" aria-label="Pausar repetición" data-testid="spec-replay-play">⏸</button>
+                                            <button id="specReplayNext" class="spec-replay__nav" type="button" aria-label="Siguiente gol" data-testid="spec-replay-next">Siguiente ▶</button>
+                                        </div>
+                                    </div>
+                                </section>
                             </section>
                             <section class="online-equipo online-equipo--blue" data-equipo="blue">
                                 <h3>AZUL <span data-cuenta></span></h3>
@@ -261,6 +316,10 @@
                                         <img id="imgEscudoAzul" alt="Escudo equipo azul">
                                         <span id="siglaEscudoAzul" class="club-shield-sigla">RIV</span>
                                     </button>
+                                </div>
+                                <div id="lobbyGoles" class="lobby-goals" data-testid="lobby-goles" hidden>
+                                    <span class="lobby-goals__titulo">Goles del partido</span>
+                                    <div id="lobbyGolesLista" class="lobby-goals__lista"></div>
                                 </div>
                             </div>
 
@@ -383,7 +442,7 @@
                                         <label for="cfgExtrapolacion" title="Adelanta lo que ves para compensar el ping">Extrapolación (ms)</label>
                                         <input id="cfgExtrapolacion" type="number" min="0" max="200" step="10" value="0">
                                     </div>
-                                    <p class="config-keys-strip">Moverse: WASD / Flechas · Patear: Espacio / X · Chat: Enter · Pausa: Esc</p>
+                                    <p class="config-keys-strip">Moverse: WASD / Flechas · Patear: Espacio / X · Pelota práctica: Q · Chat: Enter · Pausa: Esc</p>
                                 </div>
                             </article>
                         </div>
@@ -459,6 +518,7 @@
     <script src="../js/online/camara.js"></script>
     <script src="../js/online/red.js"></script>
     <script src="../js/online/dibujo.js"></script>
+    <script src="../js/online/repeticion.js"></script>
     <script src="../js/online/cliente.js"></script>
 </body>
 </html>

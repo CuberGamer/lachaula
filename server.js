@@ -8,11 +8,12 @@ const FisicaHaxball = require('./js/local/fisica-haxball.js');
 const FisicaHbs = require('./js/local/fisica-hbs.js');
 const Clubes = require('./js/online/clubes.js');
 const Puntuacion = require('./js/online/puntuacion.js');
+const Repeticion = require('./js/online/repeticion.js');
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = '0.0.0.0';
 const MS_TICK = FisicaHaxball.constantes.MS_POR_TICK;
-const DURACION_GOL_MS = 2500;
+const DURACION_GOL_MS = 1800;
 const TIEMPO_DESCONEXION_MS = 12000;
 const TIEMPO_SALA_VACIA_MS = 15000;
 const MAX_CUSTOM_MAPAS_SALA = 15;
@@ -355,6 +356,7 @@ function estadoSalaPublico(room) {
         partido: room.partido ? {
             pausado: !!room.partido.pausado,
             practica: !!room.partido.practica,
+            fase: room.partido.fase,
             marcador: { ...room.partido.marcador },
             goles: room.partido.goles.slice()
         } : null,
@@ -422,7 +424,8 @@ function iniciarPartido(room, opciones = {}) {
         powerUps: esHbs ? false : modoPot !== 'desactivado',
         potenciadoresModo: esHbs ? 'desactivado' : modoPot,
         potenciadoresActivos: activosPot,
-        combinarPoderes: esHbs ? false : !!room.config.combinarPoderes
+        combinarPoderes: esHbs ? false : !!room.config.combinarPoderes,
+        sinSaques: esPractica
     });
 
     const inputs = new Map();
@@ -434,7 +437,8 @@ function iniciarPartido(room, opciones = {}) {
         tick: 0,
         pausado: false,
         practica: esPractica,
-        fase: 'SAQUE',
+        fase: esPractica ? 'PRACTICA' : 'SAQUE',
+        practicaResetTicks: 0,
         servingTeam: kickoffTeam,
         overtime: false,
         marcador: { red: 0, blue: 0 },
@@ -446,7 +450,15 @@ function iniciarPartido(room, opciones = {}) {
         elapsedMs: 0,
         fisica,
         inputs,
-        puntuacion: Puntuacion.crearMotorPuntuacion(enCancha),
+        puntuacion: esPractica ? null : Puntuacion.crearMotorPuntuacion(enCancha),
+        replayBuffer: [],
+        goalClips: [],
+        ultimoToquePorJugador: new Map(),
+        ultimaPatadaPorJugador: new Map(),
+        golTick: null,
+        golAutorId: null,
+        golPostTicksRestantes: 0,
+        replay: null,
         ultimoTickAt: Date.now(),
         intervalId: null
     };
@@ -469,22 +481,51 @@ function detenerPartido(room, porFin = false, ganador = null) {
     }
     const marcador = { ...partido.marcador };
     const goles = partido.goles.slice();
-    const puntuacion = partido.puntuacion ? partido.puntuacion.obtenerResumen(room.jugadores) : null;
+    const goalClips = Array.isArray(partido.goalClips) ? partido.goalClips.slice(0, 25) : [];
+    if (!partido.practica && partido.fase === 'GOL' && goles.length > 0) {
+        const ultimoIdx = goles.length - 1;
+        if (ultimoIdx < 25 && !goalClips[ultimoIdx] && Array.isArray(partido.replayBuffer) && partido.replayBuffer.length >= 2) {
+            const autorId = partido.golAutorId;
+            const ultimaPatada = autorId ? partido.ultimaPatadaPorJugador.get(autorId) : null;
+            const ultimoToque = autorId ? partido.ultimoToquePorJugador.get(autorId) : null;
+            const clipFinal = Repeticion.construirClipReplay({
+                buffer: partido.replayBuffer,
+                tickGol: partido.golTick || partido.tick,
+                ultimaPatadaTick: ultimaPatada ? ultimaPatada.tick : null,
+                ultimoToqueTick: ultimoToque ? ultimoToque.tick : null,
+                ultimoGol: partido.ultimoGol,
+                jugadores: room.jugadores
+            });
+            if (clipFinal) goalClips[ultimoIdx] = clipFinal;
+        }
+    }
+    const golesConReplay = goles.map((g, idx) => ({
+        ...g,
+        tieneReplay: !!goalClips[idx]
+    }));
+    const puntuacion = !partido.practica && partido.puntuacion
+        ? partido.puntuacion.obtenerResumen(room.jugadores)
+        : null;
     room.partido = null;
 
-    if (porFin) {
-        room.ultimoResultado = { ganador, marcador, goles, puntuacion };
-        io.to(room.id).emit('partido:fin', { ganador, marcador, puntuacion });
+    if (porFin && !partido.practica) {
+        room.ultimoResultadoSeq = (room.ultimoResultadoSeq || 0) + 1;
+        room.ultimoResultado = { resultadoId: room.ultimoResultadoSeq, ganador, marcador, goles: golesConReplay, puntuacion };
+        room.ultimoResultadoClips = goalClips;
+        io.to(room.id).emit('partido:fin', { ganador, marcador, puntuacion, goles: golesConReplay });
     } else {
-        if (puntuacion && puntuacion.jugadores.some(j => j.puntos > 0)) {
+        if (!partido.practica && (golesConReplay.length > 0 || (puntuacion && puntuacion.jugadores.some(j => j.puntos > 0)))) {
+            room.ultimoResultadoSeq = (room.ultimoResultadoSeq || 0) + 1;
             room.ultimoResultado = {
+                resultadoId: room.ultimoResultadoSeq,
                 ganador: null,
-                practica: !!partido.practica,
-                detenido: !partido.practica,
+                practica: false,
+                detenido: true,
                 marcador,
-                goles,
+                goles: golesConReplay,
                 puntuacion
             };
+            room.ultimoResultadoClips = goalClips;
         }
         io.to(room.id).emit('partido:detenido', { puntuacion });
     }
@@ -516,6 +557,7 @@ function emitirFotoPartido(room) {
         t: partido.practica ? partido.elapsedMs : (partido.overtime ? partido.overtimeMs : partido.restanteMs),
         m: [partido.marcador.red, partido.marcador.blue],
         b: [f.ball.x, f.ball.y, f.ball.r, f.ball.vx, f.ball.vy],
+        eb: (f.extraBalls || []).map(eb => [eb.ownerId, eb.x, eb.y, eb.r, eb.vx, eb.vy, eb.color]),
         u: (f.activePowerUps || []).map(p => [p.x, p.y, p.type, p.r]),
         i: f.lastPowerImpact ? [f.lastPowerImpact.id, f.lastPowerImpact.x, f.lastPowerImpact.y] : null,
         j: f.players.map(p => {
@@ -537,12 +579,148 @@ function emitirFotoPartido(room) {
         })
     };
 
+    if (partido.fase === 'REPETICION' && partido.replay) {
+        const fotoReplay = {
+            n: partido.tick,
+            p: !!partido.pausado,
+            pr: partido.practica ? 1 : 0,
+            f: 'REPETICION',
+            s: partido.servingTeam,
+            x: !!partido.overtime,
+            t: partido.practica ? partido.elapsedMs : (partido.overtime ? partido.overtimeMs : partido.restanteMs),
+            m: [partido.marcador.red, partido.marcador.blue],
+            b: [f.ball.x, f.ball.y, f.ball.r, 0, 0],
+            u: [],
+            i: null,
+            j: [],
+            rt: Math.round(partido.replay.elapsedMs),
+            rd: Math.round(partido.replay.duracionMs)
+        };
+        io.to(room.id).emit('partido:estado', fotoReplay);
+        return;
+    }
+
     if (partido.fase === 'GOL' && partido.ultimoGol) {
         foto.ug = [partido.ultimoGol.equipo, partido.ultimoGol.autor || '', partido.ultimoGol.enContra ? 1 : 0];
         foto.g = partido.golTranscurridoMs;
     }
 
     io.to(room.id).emit('partido:estado', foto);
+}
+
+function payloadReplayActual(room) {
+    const partido = room && room.partido;
+    if (!partido || partido.fase !== 'REPETICION' || !partido.replay) return null;
+    const estadoVotos = Repeticion.evaluarVotosSkip(room.jugadores, partido.replay.votosSkip);
+    return {
+        clip: partido.replay.clip,
+        elapsedMs: Math.round(partido.replay.elapsedMs),
+        ...estadoVotos
+    };
+}
+
+function verificarSkipReplay(room) {
+    const partido = room && room.partido;
+    if (!partido || partido.fase !== 'REPETICION' || !partido.replay) return false;
+    const estadoVotos = Repeticion.evaluarVotosSkip(room.jugadores, partido.replay.votosSkip);
+    io.to(room.id).emit('partido:replayVotos', estadoVotos);
+    if (estadoVotos.aprobado) {
+        finalizarFaseGolYReplay(room, true);
+        return true;
+    }
+    return false;
+}
+
+function finalizarFaseGolYReplay(room, skipped = false) {
+    const partido = room && room.partido;
+    if (!partido) return;
+    const f = partido.fisica;
+    const estabaEnReplay = partido.fase === 'REPETICION' || !!partido.replay;
+    partido.replay = null;
+
+    const limiteGoles = Number(room.config.goles) || 0;
+    const ganadorPorGoles = !partido.practica && limiteGoles > 0
+        ? (partido.marcador.red >= limiteGoles ? 'red' : (partido.marcador.blue >= limiteGoles ? 'blue' : null))
+        : null;
+    if (!partido.practica && (ganadorPorGoles || partido.overtime)) {
+        const ganador = partido.marcador.red > partido.marcador.blue
+            ? 'red'
+            : (partido.marcador.blue > partido.marcador.red ? 'blue' : null);
+        if (estabaEnReplay) {
+            io.to(room.id).emit('partido:repeticionFin', { motivo: skipped ? 'skip' : 'fin' });
+        }
+        emitirFotoPartido(room);
+        detenerPartido(room, true, ganador);
+        return;
+    }
+
+    const equipoSaca = partido.ultimoGol && partido.ultimoGol.equipo === 'red' ? 'blue' : 'red';
+    partido.servingTeam = equipoSaca;
+    f.kickoffTeam = equipoSaca;
+    FisicaHaxball.reiniciarSaque(f);
+    if (partido.puntuacion) partido.puntuacion.limpiarHistorialSaque();
+    partido.replayBuffer = [];
+    partido.ultimoToquePorJugador.clear();
+    partido.ultimaPatadaPorJugador.clear();
+    partido.golTick = null;
+    partido.golAutorId = null;
+    partido.golPostTicksRestantes = 0;
+    partido.fase = 'SAQUE';
+    partido.ultimoGol = null;
+    partido.golTranscurridoMs = 0;
+
+    if (estabaEnReplay) {
+        io.to(room.id).emit('partido:repeticionFin', { motivo: skipped ? 'skip' : 'completado' });
+    }
+    io.to(room.id).emit('partido:evento', { tipo: 'saque' });
+    emitirEstadoSala(room);
+    emitirFotoPartido(room);
+}
+
+function iniciarReplayGol(room) {
+    const partido = room && room.partido;
+    if (!partido) return;
+    if (partido.practica) {
+        finalizarFaseGolYReplay(room, false);
+        return;
+    }
+
+    const autorId = partido.golAutorId;
+    const ultimaPatada = autorId ? partido.ultimaPatadaPorJugador.get(autorId) : null;
+    const ultimoToque = autorId ? partido.ultimoToquePorJugador.get(autorId) : null;
+
+    const clip = Repeticion.construirClipReplay({
+        buffer: partido.replayBuffer,
+        tickGol: partido.golTick || partido.tick,
+        ultimaPatadaTick: ultimaPatada ? ultimaPatada.tick : null,
+        ultimoToqueTick: ultimoToque ? ultimoToque.tick : null,
+        ultimoGol: partido.ultimoGol,
+        jugadores: room.jugadores
+    });
+
+    if (!clip) {
+        finalizarFaseGolYReplay(room, false);
+        return;
+    }
+
+    if (!Array.isArray(partido.goalClips)) partido.goalClips = [];
+    const golIndex = Math.max(0, partido.goles.length - 1);
+    if (golIndex < 25) {
+        partido.goalClips[golIndex] = clip;
+    }
+
+    partido.fase = 'REPETICION';
+    partido.replay = {
+        clip,
+        elapsedMs: 0,
+        duracionMs: clip.duracionMs,
+        votosSkip: new Set()
+    };
+
+    const payload = payloadReplayActual(room);
+    io.to(room.id).emit('partido:repeticion', payload);
+    emitirEstadoSala(room);
+    emitirFotoPartido(room);
 }
 
 function procesarTickPartido(room) {
@@ -553,6 +731,16 @@ function procesarTickPartido(room) {
     partido.ultimoTickAt = ahora;
 
     if (partido.pausado) {
+        return;
+    }
+
+    if (partido.fase === 'REPETICION' && partido.replay) {
+        partido.replay.elapsedMs += MS_TICK;
+        if (partido.replay.elapsedMs >= partido.replay.duracionMs) {
+            finalizarFaseGolYReplay(room, false);
+            return;
+        }
+        emitirFotoPartido(room);
         return;
     }
 
@@ -572,7 +760,27 @@ function procesarTickPartido(room) {
     f.restoMs = 0;
     const { eventos } = FisicaHaxball.avanzar(f, MS_TICK, inputsObj);
 
-    if (f.touchEvents && f.touchEvents.length > 0 && partido.puntuacion) {
+    if (partido.practica && partido.practicaResetTicks > 0) {
+        partido.practicaResetTicks -= 1;
+        if (partido.practicaResetTicks === 0) {
+            const bp = f.motor === 'hbs' && f.mapa && f.mapa.ballPhysics
+                ? f.mapa.ballPhysics
+                : { x: f.mapa.width / 2, y: f.mapa.height / 2, vx: 0, vy: 0 };
+            f.ball.x = bp.x;
+            f.ball.y = bp.y;
+            f.ball.vx = bp.vx || 0;
+            f.ball.vy = bp.vy || 0;
+            f.golEnCurso = false;
+            f.goalDetected = false;
+            f.goalResetPending = false;
+            f.waitingForKickOff = false;
+            f.lastTouch = null;
+            f.secondLastTouch = null;
+            f.lastTouchSuperKick = false;
+        }
+    }
+
+    if (f.touchEvents && f.touchEvents.length > 0) {
         const campo = f.field ? {
             left: f.field.left,
             right: f.field.right,
@@ -582,24 +790,40 @@ function procesarTickPartido(room) {
         f.touchEvents.forEach(ev => {
             const autor = room.jugadores.find(j => j.id === (ev.player && ev.player.id));
             if (!autor) return;
-            partido.puntuacion.registrarToque(autor, partido.tick, {
-                esPrimerToqueSaque: !!ev.esPrimerToque,
-                superTiro: !!ev.superTiro
-            });
-            const notifs = partido.puntuacion.evaluarIntervencion({
-                jugador: autor,
-                tickActual: partido.tick,
-                pelotaAntes: ev.pelotaAntes,
-                pelotaDespues: ev.pelotaDespues,
-                campo,
-                fuePatada: !!ev.fuePatada,
-                superTiro: !!ev.superTiro
-            });
-            notifs.forEach(n => {
-                if (n.tipo === 'atajada' || n.tipo === 'tiro') {
-                    io.to(room.id).emit('partido:notificacion', n);
+            if (partido.fase !== 'GOL') {
+                partido.ultimoToquePorJugador.set(autor.id, {
+                    tick: partido.tick,
+                    fuePatada: !!ev.fuePatada,
+                    superTiro: !!ev.superTiro
+                });
+                if (ev.fuePatada) {
+                    partido.ultimaPatadaPorJugador.set(autor.id, {
+                        tick: partido.tick,
+                        superTiro: !!ev.superTiro
+                    });
                 }
-            });
+            }
+            if (partido.puntuacion) {
+                partido.puntuacion.registrarToque(autor, partido.tick, {
+                    esPrimerToqueSaque: !!ev.esPrimerToque,
+                    superTiro: !!ev.superTiro
+                });
+                const notifs = partido.puntuacion.evaluarIntervencion({
+                    jugador: autor,
+                    tickActual: partido.tick,
+                    pelotaAntes: ev.pelotaAntes,
+                    pelotaDespues: ev.pelotaDespues,
+                    campo,
+                    fuePatada: !!ev.fuePatada,
+                    superTiro: !!ev.superTiro,
+                    diferirTiro: true
+                });
+                notifs.forEach(n => {
+                    if (n.tipo === 'atajada' || n.tipo === 'tiro') {
+                        io.to(room.id).emit('partido:notificacion', n);
+                    }
+                });
+            }
         });
         f.touchEvents.length = 0;
     }
@@ -611,72 +835,79 @@ function procesarTickPartido(room) {
     f.kickImpactEvents.length = 0;
 
     if (eventos.includes('gol')) {
-        const equipoGol = f.lastGoalTeam === 'blue' ? 'blue' : 'red';
-        partido.marcador[equipoGol] += 1;
-        const autorObj = room.jugadores.find(j => j.id === f.lastTouch);
-        const enContra = !!(autorObj && autorObj.equipo !== equipoGol);
-        const fueGolazo = !enContra && !!f.lastTouchSuperKick;
-        const duracionBaseMs = (room.config.tiempoMin || 5) * 60 * 1000;
-        const transcurridoMs = partido.practica
-            ? (partido.elapsedMs || 0)
-            : (Math.max(0, duracionBaseMs - partido.restanteMs) + (partido.overtime ? partido.overtimeMs : 0));
-        const minuto = Math.max(1, Math.floor(transcurridoMs / 60000) + 1);
-        const golInfo = {
-            equipo: equipoGol,
-            autor: autorObj ? autorObj.nombre : null,
-            minuto,
-            extra: !!partido.overtime,
-            enContra,
-            golazo: fueGolazo
-        };
-        partido.goles.push(golInfo);
-        partido.ultimoGol = golInfo;
-        partido.golTranscurridoMs = 0;
-        partido.fase = 'GOL';
-        io.to(room.id).emit('partido:evento', { tipo: 'gol', golazo: fueGolazo });
-        if (partido.puntuacion) {
-            const notifsGol = partido.puntuacion.registrarGol({
-                equipoGol,
-                autorJugador: autorObj,
-                jugadoresSala: room.jugadores,
-                tickActual: partido.tick,
-                superTiro: fueGolazo
-            });
-            notifsGol.forEach(n => io.to(room.id).emit('partido:notificacion', n));
+        if (partido.practica) {
+            // En práctica no hay notificaciones de gol, ni festejos ni saques: solo vuelve la pelota al centro.
+            partido.practicaResetTicks = 22;
+        } else {
+            const equipoGol = f.lastGoalTeam === 'blue' ? 'blue' : 'red';
+            partido.marcador[equipoGol] += 1;
+            const autorObj = room.jugadores.find(j => j.id === f.lastTouch);
+            const enContra = !!(autorObj && autorObj.equipo !== equipoGol);
+            const fueGolazo = !enContra && !!f.lastTouchSuperKick;
+            const duracionBaseMs = (room.config.tiempoMin || 5) * 60 * 1000;
+            const transcurridoMs = Math.max(0, duracionBaseMs - partido.restanteMs) + (partido.overtime ? partido.overtimeMs : 0);
+            const minuto = Math.max(1, Math.floor(transcurridoMs / 60000) + 1);
+            const golInfo = {
+                equipo: equipoGol,
+                autor: autorObj ? autorObj.nombre : null,
+                minuto,
+                extra: !!partido.overtime,
+                enContra,
+                golazo: fueGolazo
+            };
+            partido.goles.push(golInfo);
+            partido.ultimoGol = golInfo;
+            partido.golTranscurridoMs = 0;
+            partido.golTick = partido.tick;
+            partido.golAutorId = autorObj ? autorObj.id : (f.lastTouch || null);
+            partido.golPostTicksRestantes = Repeticion.POST_GOAL_TICKS;
+            partido.fase = 'GOL';
+            io.to(room.id).emit('partido:evento', { tipo: 'gol', golazo: fueGolazo });
+            if (partido.puntuacion) {
+                const notifsGol = partido.puntuacion.registrarGol({
+                    equipoGol,
+                    autorJugador: autorObj,
+                    jugadoresSala: room.jugadores,
+                    tickActual: partido.tick,
+                    superTiro: fueGolazo
+                });
+                notifsGol.forEach(n => {
+                    if (n.tipo === 'gol' || n.tipo === 'golazo') {
+                        io.to(room.id).emit('partido:notificacion', n);
+                    }
+                });
+            }
+            emitirEstadoSala(room);
         }
-        emitirEstadoSala(room);
+    } else if (partido.puntuacion && partido.fase !== 'GOL') {
+        const notifsTiros = partido.puntuacion.actualizarTirosPendientes(partido.tick, f.ball);
+        notifsTiros.forEach(n => {
+            if (n.tipo === 'tiro' || n.tipo === 'atajada') {
+                io.to(room.id).emit('partido:notificacion', n);
+            }
+        });
+    }
+
+    if (!partido.practica) {
+        if (partido.fase !== 'GOL') {
+            Repeticion.agregarFrameAlBuffer(partido.replayBuffer, Repeticion.capturarFrame(partido));
+        } else if (partido.golPostTicksRestantes > 0) {
+            Repeticion.agregarFrameAlBuffer(partido.replayBuffer, Repeticion.capturarFrame(partido));
+            partido.golPostTicksRestantes -= 1;
+        }
     }
 
     if (partido.fase === 'GOL') {
         partido.golTranscurridoMs += MS_TICK;
         if (partido.golTranscurridoMs >= DURACION_GOL_MS) {
-            const limiteGoles = Number(room.config.goles) || 0;
-            const ganadorPorGoles = !partido.practica && limiteGoles > 0
-                ? (partido.marcador.red >= limiteGoles ? 'red' : (partido.marcador.blue >= limiteGoles ? 'blue' : null))
-                : null;
-            if (!partido.practica && (ganadorPorGoles || partido.overtime)) {
-                const ganador = partido.marcador.red > partido.marcador.blue
-                    ? 'red'
-                    : (partido.marcador.blue > partido.marcador.red ? 'blue' : null);
-                emitirFotoPartido(room);
-                detenerPartido(room, true, ganador);
-                return;
-            }
-            const equipoSaca = partido.ultimoGol && partido.ultimoGol.equipo === 'red' ? 'blue' : 'red';
-            partido.servingTeam = equipoSaca;
-            f.kickoffTeam = equipoSaca;
-            FisicaHaxball.reiniciarSaque(f);
-            if (partido.puntuacion) partido.puntuacion.limpiarHistorialSaque();
-            partido.fase = 'SAQUE';
-            partido.ultimoGol = null;
-            partido.golTranscurridoMs = 0;
-            io.to(room.id).emit('partido:evento', { tipo: 'saque' });
+            iniciarReplayGol(room);
+            return;
         }
     } else if (partido.practica) {
-        if (f.timerStarted) {
-            partido.elapsedMs += MS_TICK;
-        }
-        partido.fase = f.waitingForKickOff ? 'SAQUE' : 'PRACTICA';
+        f.waitingForKickOff = false;
+        f.timerStarted = true;
+        partido.elapsedMs += MS_TICK;
+        partido.fase = 'PRACTICA';
     } else {
         if (f.timerStarted && !partido.overtime) {
             partido.restanteMs = Math.max(0, partido.restanteMs - MS_TICK);
@@ -713,6 +944,7 @@ function sincronizarJugadorEnPartido(room, jugador) {
 
     if (!debeJugar) {
         if (indice !== -1) f.players.splice(indice, 1);
+        FisicaHaxball.quitarPelotaPractica(f, jugador.id);
         partido.inputs.delete(jugador.id);
         return;
     }
@@ -786,6 +1018,7 @@ function removerJugadorDeSala(room, jugador, motivo = null) {
         const f = room.partido.fisica;
         const fi = f.players.findIndex(p => p.id === jugador.id);
         if (fi !== -1) f.players.splice(fi, 1);
+        FisicaHaxball.quitarPelotaPractica(f, jugador.id);
         room.partido.inputs.delete(jugador.id);
         if (f.players.length === 0) {
             detenerPartido(room, false);
@@ -803,6 +1036,9 @@ function removerJugadorDeSala(room, jugador, motivo = null) {
     emitirMensajeSistema(room, motivo || `${jugador.nombre} salió de la sala.`);
     emitirEstadoSala(room);
     emitirListaSalas();
+    if (room.partido && room.partido.fase === 'REPETICION') {
+        verificarSkipReplay(room);
+    }
 }
 
 // Limpieza periódica de desconectados y salas vacías
@@ -904,6 +1140,8 @@ io.on('connection', (socket) => {
             mapa: construirMapa(config.mapaId, config.modo, config.tamano),
             partido: null,
             ultimoResultado: null,
+            ultimoResultadoClips: [],
+            ultimoResultadoSeq: 0,
             vaciaDesde: null
         };
 
@@ -962,6 +1200,8 @@ io.on('connection', (socket) => {
                     });
                 }
                 emitirEstadoSala(room);
+                const replayActual = payloadReplayActual(room);
+                if (replayActual) socket.emit('partido:repeticion', replayActual);
                 return;
             }
         }
@@ -1021,6 +1261,8 @@ io.on('connection', (socket) => {
         emitirMensajeSistema(room, `${nombreJugador} entró a la sala.`);
         emitirEstadoSala(room);
         emitirListaSalas();
+        const replayActual = payloadReplayActual(room);
+        if (replayActual) socket.emit('partido:repeticion', replayActual);
     });
 
     socket.on('sala:salir', (_data, cb) => {
@@ -1057,6 +1299,9 @@ io.on('connection', (socket) => {
         objetivo.equipo = equipo;
         sincronizarJugadorEnPartido(room, objetivo);
         emitirEstadoSala(room);
+        if (room.partido && room.partido.fase === 'REPETICION') {
+            verificarSkipReplay(room);
+        }
         if (typeof cb === 'function') cb({ ok: true });
     });
 
@@ -1252,10 +1497,73 @@ io.on('connection', (socket) => {
         if (typeof cb === 'function') cb({ ok: true });
     });
 
+    socket.on('practica:pelota', (_data, cb) => {
+        const ctx = obtenerContexto();
+        if (!ctx || !ctx.room.partido || !ctx.room.partido.practica) {
+            return typeof cb === 'function' && cb({ error: 'La pelota propia solo está disponible en modo práctica.' });
+        }
+        const { room, jugador } = ctx;
+        if (jugador.equipo !== 'red' && jugador.equipo !== 'blue') {
+            return typeof cb === 'function' && cb({ error: 'Entrá a la cancha para invocar tu pelota.' });
+        }
+        const resultado = FisicaHaxball.invocarPelotaPractica(room.partido.fisica, jugador.id);
+        if (!resultado) {
+            return typeof cb === 'function' && cb({ error: 'No se pudo invocar la pelota.' });
+        }
+        emitirFotoPartido(room);
+        if (typeof cb === 'function') {
+            cb({
+                ok: true,
+                creado: resultado.creado,
+                teletransportada: resultado.teletransportada,
+                pelota: {
+                    ownerId: resultado.pelota.ownerId,
+                    x: resultado.pelota.x,
+                    y: resultado.pelota.y,
+                    r: resultado.pelota.r,
+                    color: resultado.pelota.color
+                }
+            });
+        }
+    });
+
+    socket.on('partido:skipReplay', (_data, cb) => {
+        const ctx = obtenerContexto();
+        if (!ctx || !ctx.room.partido) return typeof cb === 'function' && cb({ error: 'No hay partido en curso.' });
+        const { room, jugador } = ctx;
+        const partido = room.partido;
+        if (partido.fase !== 'REPETICION' || !partido.replay) {
+            return typeof cb === 'function' && cb({ error: 'No hay repetición activa.' });
+        }
+        if (!Repeticion.esElegibleSkip(room.jugadores, jugador.id)) {
+            return typeof cb === 'function' && cb({ error: 'Solo los jugadores en cancha pueden votar para saltar.' });
+        }
+        partido.replay.votosSkip.add(jugador.id);
+        const estadoVotos = Repeticion.evaluarVotosSkip(room.jugadores, partido.replay.votosSkip);
+        io.to(room.id).emit('partido:replayVotos', estadoVotos);
+        if (typeof cb === 'function') cb({ ok: true, ...estadoVotos });
+        if (estadoVotos.aprobado) {
+            finalizarFaseGolYReplay(room, true);
+        }
+    });
+
+    socket.on('sala:verGolReplay', (data = {}, cb) => {
+        const ctx = obtenerContexto();
+        if (!ctx) return typeof cb === 'function' && cb({ error: 'No estás en ninguna sala.' });
+        const { room } = ctx;
+        if (room.partido) return typeof cb === 'function' && cb({ error: 'Esperá a que termine el partido actual.' });
+        const idx = Number(data && data.indice);
+        const clips = Array.isArray(room.ultimoResultadoClips) ? room.ultimoResultadoClips : [];
+        const clip = Number.isInteger(idx) && idx >= 0 && idx < clips.length ? clips[idx] : null;
+        if (!clip) return typeof cb === 'function' && cb({ error: 'Ese gol no tiene repetición guardada.' });
+        if (typeof cb === 'function') cb({ ok: true, clip, indice: idx, totalGoles: clips.length });
+    });
+
     socket.on('entrada', (data = {}) => {
         const ctx = obtenerContexto();
         if (!ctx || !ctx.room.partido) return;
         const partido = ctx.room.partido;
+        if (partido.fase === 'REPETICION') return;
         const bits = Number(data.b) | 0;
         const tickTecla = Number.isFinite(Number(data.k)) ? Math.floor(Number(data.k)) : -1;
         partido.inputs.set(ctx.jugador.id, {
@@ -1278,6 +1586,9 @@ io.on('connection', (socket) => {
         }
         asegurarAdmin(room);
         emitirEstadoSala(room);
+        if (room.partido && room.partido.fase === 'REPETICION') {
+            verificarSkipReplay(room);
+        }
     });
 });
 

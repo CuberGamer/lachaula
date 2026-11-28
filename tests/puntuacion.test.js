@@ -146,3 +146,91 @@ test('catalogo de clubes incluye Nueva Chicago, escudos reales y estadios de clu
     assert.equal(Clubes.TAMANOS_JUGADORES.length, 8);
     assert.equal(Clubes.TAMANOS_JUGADORES[7].id, '11v11');
 });
+
+test('cooldowns en tiro al arco y atajada y cancelacion de tiro al arco cuando termina en gol', () => {
+    const campo = { left: 80, right: 760, goalTop: 140, goalBottom: 260 };
+    const red = { id: 'r1', nombre: 'Delantero', equipo: 'red' };
+    const blue = { id: 'b1', nombre: 'Arquero', equipo: 'blue' };
+    const motor = Puntuacion.crearMotorPuntuacion([red, blue]);
+
+    // 1. Tiro diferido seguido de gol: NO debe emitir tiro al arco
+    const evTiroGol = motor.evaluarIntervencion({
+        jugador: red,
+        tickActual: 50,
+        pelotaAntes: { x: 640, y: 200, vx: 1, vy: 0 },
+        pelotaDespues: { x: 646, y: 200, vx: 6.5, vy: 0 },
+        campo,
+        fuePatada: true,
+        diferirTiro: true
+    });
+    assert.equal(evTiroGol.some(e => e.tipo === 'tiro'), false);
+
+    motor.registrarGol({
+        equipoGol: 'red',
+        autorJugador: red,
+        jugadoresSala: [red, blue],
+        tickActual: 65
+    });
+    const evDespuesGol = motor.actualizarTirosPendientes(120, { x: 750, y: 200, vx: 0, vy: 0 });
+    assert.equal(evDespuesGol.length, 0);
+
+    // 2. Tiro diferido seguido de atajada del arquero rival: deben emitirse ambos (tiro al arco + atajada)
+    const evTiro2 = motor.evaluarIntervencion({
+        jugador: red,
+        tickActual: 200,
+        pelotaAntes: { x: 600, y: 200, vx: 1, vy: 0 },
+        pelotaDespues: { x: 606, y: 200, vx: 6.5, vy: 0 },
+        campo,
+        fuePatada: true,
+        diferirTiro: true
+    });
+    assert.equal(evTiro2.length, 0);
+
+    const evAtajada = motor.evaluarIntervencion({
+        jugador: blue,
+        tickActual: 225,
+        pelotaAntes: { x: 720, y: 200, vx: 6.5, vy: 0 },
+        pelotaDespues: { x: 714, y: 200, vx: -5.5, vy: 0.5 },
+        campo,
+        fuePatada: true,
+        diferirTiro: true
+    });
+    assert.equal(evAtajada.some(e => e.tipo === 'tiro' && e.jugadorId === 'r1'), true);
+    assert.equal(evAtajada.some(e => e.tipo === 'atajada' && e.jugadorId === 'b1'), true);
+
+    // 3. Dentro de cooldown (< 240 ticks) ni otro tiro ni otra atajada deben volver a sumar
+    const evTiroCooldown = motor.evaluarIntervencion({
+        jugador: red,
+        tickActual: 300,
+        pelotaAntes: { x: 600, y: 200, vx: 1, vy: 0 },
+        pelotaDespues: { x: 606, y: 200, vx: 6.5, vy: 0 },
+        campo,
+        fuePatada: true,
+        diferirTiro: false
+    });
+    assert.equal(evTiroCooldown.some(e => e.tipo === 'tiro'), false);
+
+    const evAtajadaCooldown = motor.evaluarIntervencion({
+        jugador: blue,
+        tickActual: 320,
+        pelotaAntes: { x: 720, y: 200, vx: 6.5, vy: 0 },
+        pelotaDespues: { x: 714, y: 200, vx: -5.5, vy: 0.5 },
+        campo,
+        fuePatada: true,
+        diferirTiro: true
+    });
+    assert.equal(evAtajadaCooldown.some(e => e.tipo === 'atajada'), false);
+
+    // 4. Pasado el cooldown (>= 240 ticks), vuelven a sumar
+    const evTiroLuego = motor.evaluarIntervencion({
+        jugador: red,
+        tickActual: 500,
+        pelotaAntes: { x: 600, y: 200, vx: 1, vy: 0 },
+        pelotaDespues: { x: 606, y: 200, vx: 6.5, vy: 0 },
+        campo,
+        fuePatada: true,
+        diferirTiro: false
+    });
+    assert.equal(evTiroLuego.some(e => e.tipo === 'tiro'), true);
+});
+

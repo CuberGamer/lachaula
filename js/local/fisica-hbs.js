@@ -46,6 +46,64 @@
         gravity: [0, 0]
     };
 
+    const COLORES_PELOTA_PRACTICA = [
+        '#38bdf8',
+        '#fb7185',
+        '#a78bfa',
+        '#34d399',
+        '#fbbf24',
+        '#f97316',
+        '#f472b6',
+        '#2dd4bf'
+    ];
+
+    function parseRgbColor(color) {
+        if (!color || typeof color !== 'string') return null;
+        const c = color.trim().toLowerCase();
+        const hex3 = c.match(/^#([0-9a-f]{3})$/);
+        if (hex3) {
+            return hex3[1].split('').map(ch => parseInt(ch + ch, 16));
+        }
+        const hex6 = c.match(/^#([0-9a-f]{6})$/);
+        if (hex6) {
+            const h = hex6[1];
+            return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+        }
+        const rgb = c.match(/^rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$/);
+        if (rgb) {
+            return [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])];
+        }
+        return null;
+    }
+
+    function coloresMuyParecidos(a, b) {
+        const ra = parseRgbColor(a);
+        const rb = parseRgbColor(b);
+        if (!ra || !rb) return String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+        return (Math.abs(ra[0] - rb[0]) + Math.abs(ra[1] - rb[1]) + Math.abs(ra[2] - rb[2])) < 90;
+    }
+
+    function elegirColorPelotaPractica(estado, ownerId) {
+        const colorOriginal = (estado && estado.mapa && estado.mapa.ballPhysics && estado.mapa.ballPhysics.color) || '#ffffff';
+        const usados = new Set(
+            (estado && Array.isArray(estado.extraBalls) ? estado.extraBalls : [])
+                .filter(b => b.ownerId !== ownerId && b.color)
+                .map(b => b.color.toLowerCase())
+        );
+        const disponibles = COLORES_PELOTA_PRACTICA.filter(c =>
+            !coloresMuyParecidos(c, colorOriginal) && !coloresMuyParecidos(c, '#ffffff')
+        );
+        const pool = disponibles.length ? disponibles : COLORES_PELOTA_PRACTICA;
+        const libre = pool.find(c => !usados.has(c.toLowerCase()));
+        if (libre) return libre;
+        let hash = 0;
+        const str = String(ownerId || '');
+        for (let i = 0; i < str.length; i += 1) {
+            hash = ((hash * 31) + str.charCodeAt(i)) >>> 0;
+        }
+        return pool[hash % pool.length];
+    }
+
     function stripJsonComments(str) {
         let out = '';
         let inStr = false;
@@ -470,7 +528,7 @@
         };
     }
 
-    function crearEstado({ mapa, ladoIzquierdo = 'red', kickoffTeam = 'red', jugadores = [] } = {}) {
+    function crearEstado({ mapa, ladoIzquierdo = 'red', kickoffTeam = 'red', jugadores = [], sinSaques = false } = {}) {
         const players = jugadores.map((j, idx) => {
             const id = j.id == null ? `j${idx + 1}` : String(j.id);
             const equipo = j.equipo === 'blue' ? 'blue' : 'red';
@@ -544,10 +602,11 @@
             postes: [],
             players,
             ball,
+            extraBalls: [],
             dynamicDiscs,
             staticDiscs,
             activePowerUps: [],
-            waitingForKickOff: true,
+            waitingForKickOff: !sinSaques,
             kickoffPlayerId: players[0] ? players[0].id : 'j1',
             kickoffTeam: kickoffTeam === 'blue' ? 'blue' : 'red',
             golEnCurso: false,
@@ -556,7 +615,7 @@
             kickEvents: [],
             kickImpactEvents: [],
             touchEvents: [],
-            timerStarted: false,
+            timerStarted: !!sinSaques,
             goalResetPending: false,
             lastTouch: null,
             secondLastTouch: null,
@@ -771,6 +830,28 @@
         }
     }
 
+    function patearPelotaHbs(jugador, pelota, estado, pp, esPrincipal) {
+        const dx = pelota.x - jugador.x;
+        const dy = pelota.y - jugador.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist - jugador.r - pelota.r >= 4) return false;
+        const pelotaAntes = { x: pelota.x, y: pelota.y, vx: pelota.vx, vy: pelota.vy };
+        const nx = dist > 0 ? dx / dist : 1;
+        const ny = dist > 0 ? dy / dist : 0;
+        const kickImpulse = pp.kickStrength * pelota.invMass;
+        if (Number.isFinite(kickImpulse)) {
+            pelota.vx += nx * kickImpulse;
+            pelota.vy += ny * kickImpulse;
+        }
+        jugador.patadaUsada = true;
+        jugador.pateando = false;
+        estado.kickImpactEvents.push({ player: jugador, extraBall: !esPrincipal });
+        if (esPrincipal) {
+            registrarToque(jugador, estado, { fuePatada: true, pelotaAntes });
+        }
+        return true;
+    }
+
     function aplicarInput(jugador, input, estado) {
         const pp = estado.mapa.playerPhysics;
         const mantiene = !!(input.kick || input.kickPressed);
@@ -780,23 +861,19 @@
         jugador.pateando = armado;
 
         if (armado) {
-            const pelota = estado.ball;
-            const dx = pelota.x - jugador.x;
-            const dy = pelota.y - jugador.y;
-            const dist = Math.hypot(dx, dy);
-            if (dist - jugador.r - pelota.r < 4) {
-                const pelotaAntes = { x: pelota.x, y: pelota.y, vx: pelota.vx, vy: pelota.vy };
-                const nx = dist > 0 ? dx / dist : 1;
-                const ny = dist > 0 ? dy / dist : 0;
-                const kickImpulse = pp.kickStrength * pelota.invMass;
-                if (Number.isFinite(kickImpulse)) {
-                    pelota.vx += nx * kickImpulse;
-                    pelota.vy += ny * kickImpulse;
+            if (!patearPelotaHbs(jugador, estado.ball, estado, pp, true)) {
+                const extras = estado.extraBalls || [];
+                let masCercana = null;
+                let mejorDist = Infinity;
+                for (let i = 0; i < extras.length; i += 1) {
+                    const eb = extras[i];
+                    const distBorde = Math.hypot(eb.x - jugador.x, eb.y - jugador.y) - jugador.r - eb.r;
+                    if (distBorde < 4 && distBorde < mejorDist) {
+                        mejorDist = distBorde;
+                        masCercana = eb;
+                    }
                 }
-                jugador.patadaUsada = true;
-                jugador.pateando = false;
-                estado.kickImpactEvents.push({ player: jugador });
-                registrarToque(jugador, estado, { fuePatada: true, pelotaAntes });
+                if (masCercana) patearPelotaHbs(jugador, masCercana, estado, pp, false);
             }
         }
 
@@ -838,6 +915,17 @@
         ball.vy *= ball.damping;
         limitarEstadioHbs(ball, mapa);
 
+        const extras = estado.extraBalls || [];
+        extras.forEach(eb => {
+            eb.vx += bp.gravity[0];
+            eb.vy += bp.gravity[1];
+            eb.x += eb.vx;
+            eb.y += eb.vy;
+            eb.vx *= eb.damping;
+            eb.vy *= eb.damping;
+            limitarEstadioHbs(eb, mapa);
+        });
+
         (estado.dynamicDiscs || []).forEach(d => {
             d.x += d.vx;
             d.y += d.vy;
@@ -864,8 +952,18 @@
             }
         });
 
-        // Jugadores y pelota vs geometría del estadio
-        const moviles = [...estado.players, ball, ...(estado.dynamicDiscs || [])];
+        // Jugadores, pelota principal y pelotas extra de práctica
+        for (let i = 0; i < extras.length; i += 1) {
+            const eb = extras[i];
+            estado.players.forEach(j => chocarDiscos(j, eb, activeKOBits));
+            chocarDiscos(ball, eb, activeKOBits);
+            for (let k = i + 1; k < extras.length; k += 1) {
+                chocarDiscos(eb, extras[k], activeKOBits);
+            }
+        }
+
+        // Jugadores y pelotas vs geometría del estadio
+        const moviles = [...estado.players, ball, ...extras, ...(estado.dynamicDiscs || [])];
         for (let m = 0; m < moviles.length; m += 1) {
             const d = moviles[m];
             for (let i = 0; i < mapa.segments.length; i += 1) {
@@ -885,11 +983,10 @@
             }
         }
 
-        // Discos dinámicos vs pelota y jugadores
+        // Discos dinámicos vs pelotas y jugadores
         (estado.dynamicDiscs || []).forEach(dd => {
-            if (chocarDiscos(dd, ball, activeKOBits) && dd.cMask & MASK.ball) {
-                // ballPush u otros objetos dinámicos
-            }
+            chocarDiscos(dd, ball, activeKOBits);
+            extras.forEach(eb => chocarDiscos(dd, eb, activeKOBits));
             estado.players.forEach(j => chocarDiscos(dd, j, activeKOBits));
         });
 
@@ -979,9 +1076,67 @@
         return { pasos, eventos };
     }
 
+    function invocarPelotaPractica(estado, jugadorId) {
+        if (!estado || !estado.ball) return null;
+        const id = String(jugadorId);
+        const jugador = estado.players.find(j => j.id === id);
+        if (!jugador) return null;
+        if (!Array.isArray(estado.extraBalls)) estado.extraBalls = [];
+
+        const mapa = estado.mapa;
+        const bp = mapa.ballPhysics || estado.ball;
+        let eb = estado.extraBalls.find(b => b.ownerId === id);
+        const creado = !eb;
+        const r = eb ? eb.r : (bp.radius || estado.ball.r);
+
+        const spd = Math.hypot(jugador.vx || 0, jugador.vy || 0);
+        const dirDef = jugador.equipo === estado.ladoIzquierdo ? 1 : -1;
+        const nx = spd > 0.08 ? jugador.vx / spd : dirDef;
+        const ny = spd > 0.08 ? jugador.vy / spd : 0;
+        const dist = jugador.r + r + 2;
+
+        const minX = r + 2;
+        const maxX = Math.max(minX, (mapa.width || 840) - r - 2);
+        const minY = r + 2;
+        const maxY = Math.max(minY, (mapa.height || 400) - r - 2);
+        const tx = Math.max(minX, Math.min(maxX, jugador.x + nx * dist));
+        const ty = Math.max(minY, Math.min(maxY, jugador.y + ny * dist));
+
+        if (!eb) {
+            eb = {
+                ownerId: id,
+                x: tx,
+                y: ty,
+                vx: 0,
+                vy: 0,
+                r,
+                invMass: bp.invMass !== undefined ? bp.invMass : estado.ball.invMass,
+                bCoef: bp.bCoef !== undefined ? bp.bCoef : estado.ball.bCoef,
+                damping: bp.damping !== undefined ? bp.damping : estado.ball.damping,
+                cMask: bp.cMask !== undefined ? bp.cMask : estado.ball.cMask,
+                cGroup: bp.cGroup !== undefined ? bp.cGroup : estado.ball.cGroup,
+                color: elegirColorPelotaPractica(estado, id)
+            };
+            estado.extraBalls.push(eb);
+        } else {
+            eb.x = tx;
+            eb.y = ty;
+            eb.vx = 0;
+            eb.vy = 0;
+        }
+        return { creado, teletransportada: !creado, pelota: eb };
+    }
+
+    function quitarPelotaPractica(estado, jugadorId) {
+        if (!estado || !Array.isArray(estado.extraBalls)) return;
+        const id = String(jugadorId);
+        estado.extraBalls = estado.extraBalls.filter(b => b.ownerId !== id);
+    }
+
     const FisicaHbs = {
         MASK,
         ALL_MASK,
+        COLORES_PELOTA_PRACTICA,
         stripJsonComments,
         parseHbsTexto,
         parseHbsColor,
@@ -989,7 +1144,9 @@
         crearEstado,
         avanzar,
         reiniciarSaque,
-        posicionJugadorHbs
+        posicionJugadorHbs,
+        invocarPelotaPractica,
+        quitarPelotaPractica
     };
 
     global.FisicaHbs = FisicaHbs;

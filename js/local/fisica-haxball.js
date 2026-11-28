@@ -179,10 +179,11 @@
         potenciadoresModo = null,
         potenciadoresActivos = null,
         combinarPoderes = false,
+        sinSaques = false,
         aleatorio = Math.random
     } = {}) {
         if (mapa && mapa.hbs && Hbs) {
-            return Hbs.crearEstado({ mapa, ladoIzquierdo, kickoffTeam, jugadores });
+            return Hbs.crearEstado({ mapa, ladoIzquierdo, kickoffTeam, jugadores, sinSaques });
         }
         const map = normalizarMapa(mapa);
         const centroX = map.width / 2;
@@ -233,6 +234,7 @@
             players,
             fisicaPelota: pelotaDelModo(map.modo),
             ball: { x: centroX, y: map.height / 2, vx: 0, vy: 0, r: pelotaDelModo(map.modo).radio * map.escala, invMass: pelotaDelModo(map.modo).invMass },
+            extraBalls: [],
             powerUpsHabilitados: habilitados,
             potenciadoresModo: modoPot,
             tiposPowerUps: tiposPermitidos,
@@ -244,7 +246,7 @@
             bolsaPowerUps: [],
             ultimoPowerUp: null,
             proximoPowerUpTicks: 0,
-            waitingForKickOff: true,
+            waitingForKickOff: !sinSaques,
             kickoffPlayerId: players[0] ? players[0].id : 'j1',
             kickoffTeam: kickoffTeam === 'blue' || kickoffTeam === 'red' ? kickoffTeam : null,
             golEnCurso: false,
@@ -253,7 +255,7 @@
             kickEvents: [],
             kickImpactEvents: [],
             touchEvents: [],
-            timerStarted: false,
+            timerStarted: !!sinSaques,
             goalResetPending: false,
             lastTouch: null,
             secondLastTouch: null,
@@ -361,13 +363,11 @@
         jugador.vy += dy * aceleracion;
     }
 
-    function intentarPatada(jugador, estado) {
-        if (estado.waitingForKickOff && !esEquipoQueSaca(jugador, estado)) return;
-        const pelota = estado.ball;
+    function patearDisco(jugador, pelota, estado, esPrincipal) {
         const dx = pelota.x - jugador.x;
         const dy = pelota.y - jugador.y;
         const distancia = Math.hypot(dx, dy);
-        if (distancia - jugador.r - pelota.r >= DISTANCIA_PATADA * estado.mapa.escala) return;
+        if (distancia - jugador.r - pelota.r >= DISTANCIA_PATADA * estado.mapa.escala) return false;
         const nx = distancia > 0 ? dx / distancia : 1;
         const ny = distancia > 0 ? dy / distancia : 0;
         const pelotaAntes = { x: pelota.x, y: pelota.y, vx: pelota.vx, vy: pelota.vy };
@@ -379,12 +379,32 @@
         jugador.vy -= ny * JUGADOR.retroceso * jugador.invMass;
         jugador.patadaUsada = true;
         jugador.pateando = false;
-        estado.kickImpactEvents.push({ player: jugador, superTiro: !!superTiro });
-        registrarToque(jugador, estado, { fuePatada: true, superTiro: !!superTiro, pelotaAntes });
+        estado.kickImpactEvents.push({ player: jugador, superTiro: !!superTiro, extraBall: !esPrincipal });
+        if (esPrincipal) {
+            registrarToque(jugador, estado, { fuePatada: true, superTiro: !!superTiro, pelotaAntes });
+        }
         if (superTiro) {
             estado.powerImpactId += 1;
             estado.lastPowerImpact = { id: estado.powerImpactId, x: pelota.x, y: pelota.y };
         }
+        return true;
+    }
+
+    function intentarPatada(jugador, estado) {
+        if (estado.waitingForKickOff && !esEquipoQueSaca(jugador, estado)) return;
+        if (patearDisco(jugador, estado.ball, estado, true)) return;
+        const extras = estado.extraBalls || [];
+        let masCercana = null;
+        let mejorDist = Infinity;
+        for (let i = 0; i < extras.length; i += 1) {
+            const eb = extras[i];
+            const distBorde = Math.hypot(eb.x - jugador.x, eb.y - jugador.y) - jugador.r - eb.r;
+            if (distBorde < DISTANCIA_PATADA * estado.mapa.escala && distBorde < mejorDist) {
+                mejorDist = distBorde;
+                masCercana = eb;
+            }
+        }
+        if (masCercana) patearDisco(jugador, masCercana, estado, false);
     }
 
     function registrarToque(jugador, estado, { fuePatada = false, superTiro = false, pelotaAntes = null } = {}) {
@@ -427,6 +447,12 @@
         pelota.y += pelota.vy;
         pelota.vx *= estado.fisicaPelota.damping;
         pelota.vy *= estado.fisicaPelota.damping;
+        (estado.extraBalls || []).forEach(eb => {
+            eb.x += eb.vx;
+            eb.y += eb.vy;
+            eb.vx *= estado.fisicaPelota.damping;
+            eb.vy *= estado.fisicaPelota.damping;
+        });
     }
 
     /* ========================= */
@@ -656,8 +682,9 @@
         jugador.vy *= 0.5;
     }
 
-    function resolverColisiones(estado, pelotaAnterior = null) {
+    function resolverColisiones(estado, pelotaAnterior = null, extrasAnteriores = null) {
         const { players, ball, postes } = estado;
+        const extras = estado.extraBalls || [];
         for (let i = 0; i < players.length; i += 1) {
             for (let j = i + 1; j < players.length; j += 1) {
                 chocarDiscos(players[i], players[j], JUGADOR.bCoef, JUGADOR.bCoef);
@@ -669,6 +696,17 @@
                 registrarToque(jugador, estado, { fuePatada: false, superTiro: false, pelotaAntes });
             }
         });
+        for (let i = 0; i < extras.length; i += 1) {
+            const eb = extras[i];
+            const prevEb = extrasAnteriores ? extrasAnteriores[i] : null;
+            players.forEach(jugador => chocarDiscos(jugador, eb, JUGADOR.bCoef, estado.fisicaPelota.bCoef));
+            chocarDiscos(ball, eb, estado.fisicaPelota.bCoef, estado.fisicaPelota.bCoef);
+            for (let j = i + 1; j < extras.length; j += 1) {
+                chocarDiscos(eb, extras[j], estado.fisicaPelota.bCoef, estado.fisicaPelota.bCoef);
+            }
+            postes.forEach(poste => chocarPosteBarrido(eb, poste, estado.fisicaPelota.bCoef, POSTE.bCoef, prevEb));
+            segmentosPelota(estado).forEach(segmento => chocarSegmento(eb, segmento, estado.fisicaPelota.bCoef, prevEb));
+        }
         players.forEach(jugador => postes.forEach(poste => chocarDiscoFijo(jugador, poste, JUGADOR.bCoef, POSTE.bCoef)));
         postes.forEach(poste => chocarPosteBarrido(ball, poste, estado.fisicaPelota.bCoef, POSTE.bCoef, pelotaAnterior));
         segmentosPelota(estado).forEach(segmento => chocarSegmento(ball, segmento, estado.fisicaPelota.bCoef, pelotaAnterior));
@@ -868,8 +906,9 @@
     function tick(estado, inputs) {
         estado.players.forEach(jugador => aplicarInput(jugador, inputDe(inputs, jugador), estado));
         const pelotaAnterior = { x: estado.ball.x, y: estado.ball.y };
+        const extrasAnteriores = (estado.extraBalls || []).map(eb => ({ x: eb.x, y: eb.y }));
         integrar(estado);
-        resolverColisiones(estado, pelotaAnterior);
+        resolverColisiones(estado, pelotaAnterior, extrasAnteriores);
         detectarGol(estado, pelotaAnterior.x);
         avanzarPowerUps(estado);
     }
@@ -898,6 +937,123 @@
         return { pasos, eventos };
     }
 
+    const COLORES_PELOTA_PRACTICA = [
+        '#38bdf8',
+        '#fb7185',
+        '#a78bfa',
+        '#34d399',
+        '#fbbf24',
+        '#f97316',
+        '#f472b6',
+        '#2dd4bf'
+    ];
+
+    function parseRgbColor(color) {
+        if (!color || typeof color !== 'string') return null;
+        const c = color.trim().toLowerCase();
+        const hex3 = c.match(/^#([0-9a-f]{3})$/);
+        if (hex3) {
+            return hex3[1].split('').map(ch => parseInt(ch + ch, 16));
+        }
+        const hex6 = c.match(/^#([0-9a-f]{6})$/);
+        if (hex6) {
+            const h = hex6[1];
+            return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+        }
+        const rgb = c.match(/^rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$/);
+        if (rgb) {
+            return [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])];
+        }
+        return null;
+    }
+
+    function coloresMuyParecidos(a, b) {
+        const ra = parseRgbColor(a);
+        const rb = parseRgbColor(b);
+        if (!ra || !rb) return String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+        return (Math.abs(ra[0] - rb[0]) + Math.abs(ra[1] - rb[1]) + Math.abs(ra[2] - rb[2])) < 90;
+    }
+
+    function elegirColorPelotaPractica(estado, ownerId) {
+        const colorOriginal = (estado && estado.mapa && estado.mapa.ballPhysics && estado.mapa.ballPhysics.color) || '#ffffff';
+        const usados = new Set(
+            (estado && Array.isArray(estado.extraBalls) ? estado.extraBalls : [])
+                .filter(b => b.ownerId !== ownerId && b.color)
+                .map(b => b.color.toLowerCase())
+        );
+        const disponibles = COLORES_PELOTA_PRACTICA.filter(c =>
+            !coloresMuyParecidos(c, colorOriginal) && !coloresMuyParecidos(c, '#ffffff')
+        );
+        const pool = disponibles.length ? disponibles : COLORES_PELOTA_PRACTICA;
+        const libre = pool.find(c => !usados.has(c.toLowerCase()));
+        if (libre) return libre;
+        let hash = 0;
+        const str = String(ownerId || '');
+        for (let i = 0; i < str.length; i += 1) {
+            hash = ((hash * 31) + str.charCodeAt(i)) >>> 0;
+        }
+        return pool[hash % pool.length];
+    }
+
+    function invocarPelotaPractica(estado, jugadorId) {
+        if (!estado || !estado.ball) return null;
+        if (estado.motor === 'hbs' && Hbs) return Hbs.invocarPelotaPractica(estado, jugadorId);
+        const id = String(jugadorId);
+        const jugador = estado.players.find(j => j.id === id);
+        if (!jugador) return null;
+        if (!Array.isArray(estado.extraBalls)) estado.extraBalls = [];
+
+        const escala = (estado.mapa && estado.mapa.escala) || 1;
+        const field = estado.field;
+        let eb = estado.extraBalls.find(b => b.ownerId === id);
+        const creado = !eb;
+        const r = eb ? eb.r : estado.ball.r;
+
+        const spd = Math.hypot(jugador.vx || 0, jugador.vy || 0);
+        const dirDef = jugador.equipo === estado.ladoIzquierdo ? 1 : -1;
+        const nx = spd > 0.08 ? jugador.vx / spd : dirDef;
+        const ny = spd > 0.08 ? jugador.vy / spd : 0;
+        const dist = jugador.r + r + 2 * escala;
+
+        const minX = (field ? field.left : 0) + r + 2 * escala;
+        const maxX = Math.max(minX, (field ? field.right : estado.mapa.width) - r - 2 * escala);
+        const minY = (field ? field.top : 0) + r + 2 * escala;
+        const maxY = Math.max(minY, (field ? field.bottom : estado.mapa.height) - r - 2 * escala);
+        const tx = Math.max(minX, Math.min(maxX, jugador.x + nx * dist));
+        const ty = Math.max(minY, Math.min(maxY, jugador.y + ny * dist));
+
+        if (!eb) {
+            eb = {
+                ownerId: id,
+                x: tx,
+                y: ty,
+                vx: 0,
+                vy: 0,
+                r,
+                invMass: estado.ball.invMass,
+                color: elegirColorPelotaPractica(estado, id)
+            };
+            estado.extraBalls.push(eb);
+        } else {
+            eb.x = tx;
+            eb.y = ty;
+            eb.vx = 0;
+            eb.vy = 0;
+        }
+        return { creado, teletransportada: !creado, pelota: eb };
+    }
+
+    function quitarPelotaPractica(estado, jugadorId) {
+        if (!estado) return;
+        if (estado.motor === 'hbs' && Hbs) {
+            Hbs.quitarPelotaPractica(estado, jugadorId);
+            return;
+        }
+        if (!Array.isArray(estado.extraBalls)) return;
+        const id = String(jugadorId);
+        estado.extraBalls = estado.extraBalls.filter(b => b.ownerId !== id);
+    }
+
     const FisicaHaxball = {
         crearEstado,
         avanzar,
@@ -907,6 +1063,9 @@
         codigoPoderes,
         nivelPoder,
         posicionEnFormacion,
+        invocarPelotaPractica,
+        quitarPelotaPractica,
+        COLORES_PELOTA_PRACTICA,
         constantes: {
             JUGADOR, PELOTA, PELOTAS_POR_MODO, POSTE, AUMENTO_POR_NIVEL, MAX_NIVEL_PODER, DISTANCIA_PATADA, MS_POR_TICK, ANCHO_REFERENCIA, ALTO_REFERENCIA, ESCALA_MAX,
             TIPOS_POWERUP, RADIO_POWERUP, MAX_POWERUPS_EN_CANCHA, DISTANCIA_LIBRE_POWERUP,

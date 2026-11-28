@@ -25,7 +25,10 @@
 
     const COOLDOWN_TOQUE_TICKS = 45; // ~750 ms a 60 Hz
     const VENTANA_ASISTENCIA_TICKS = 360; // 6 segundos
-    const COOLDOWN_JUGADA_TICKS = 50; // Evita repetir atajada/tiro/despeje en rebotes seguidos
+    const COOLDOWN_JUGADA_TICKS = 120; // 2 s para despejes
+    const COOLDOWN_TIRO_TICKS = 240; // 4 s cooldown entre tiros al arco
+    const COOLDOWN_ATAJADA_TICKS = 240; // 4 s cooldown entre salvadas
+    const MAX_ESPERA_TIRO_TICKS = 110; // ~1.8 s máximo esperando ver si entra en gol o se ataja
 
     function crearRegistroJugador(jugador) {
         return {
@@ -48,6 +51,7 @@
         const ultimoToqueTick = new Map();
         const ultimaJugadaTick = new Map();
         const historialToques = []; // { jugadorId, equipo, tick, superTiro }
+        let tiroPendiente = null; // { jugador, equipoRival, arcoRivalX, ladoRival, campo, creadoTick }
 
         jugadores.forEach(j => {
             if (j && (j.equipo === 'red' || j.equipo === 'blue')) {
@@ -111,12 +115,38 @@
             return { tipo: 'toque', puntos: PUNTOS.TOQUE, jugadorId: jugador.id };
         }
 
-        function puedeRegistrarJugada(jugadorId, tipo, tickActual) {
+        function cooldownDeTipo(tipo) {
+            if (tipo === 'tiro') return COOLDOWN_TIRO_TICKS;
+            if (tipo === 'atajada') return COOLDOWN_ATAJADA_TICKS;
+            return COOLDOWN_JUGADA_TICKS;
+        }
+
+        function estaEnCooldownJugada(jugadorId, tipo, tickActual) {
             const clave = `${jugadorId}:${tipo}`;
             const prev = ultimaJugadaTick.get(clave);
-            if (prev !== undefined && (tickActual - prev) < COOLDOWN_JUGADA_TICKS) return false;
-            ultimaJugadaTick.set(clave, tickActual);
+            return prev !== undefined && (tickActual - prev) < cooldownDeTipo(tipo);
+        }
+
+        function puedeRegistrarJugada(jugadorId, tipo, tickActual) {
+            if (estaEnCooldownJugada(jugadorId, tipo, tickActual)) return false;
+            ultimaJugadaTick.set(`${jugadorId}:${tipo}`, tickActual);
             return true;
+        }
+
+        function confirmarTiroPendiente(tickActual) {
+            if (!tiroPendiente) return null;
+            const pendiente = tiroPendiente;
+            tiroPendiente = null;
+            if (!puedeRegistrarJugada(pendiente.jugador.id, 'tiro', tickActual)) return null;
+            sumarPuntos(pendiente.jugador, 'tiros', PUNTOS.TIRO_AL_ARCO);
+            return {
+                tipo: 'tiro',
+                titulo: 'TIRO AL ARCO',
+                jugadorId: pendiente.jugador.id,
+                jugador: pendiente.jugador.nombre,
+                equipo: pendiente.jugador.equipo,
+                puntos: PUNTOS.TIRO_AL_ARCO
+            };
         }
 
         /**
@@ -129,7 +159,7 @@
             const dx = arcoX - bx;
             if (Math.abs(bvx) < 0.05) return false;
             const ticksHastaLinea = dx / bvx;
-            if (ticksHastaLinea < 0 || ticksHastaLinea > 120) return false;
+            if (ticksHastaLinea < 0 || ticksHastaLinea > 80) return false;
             const yProyectada = by + bvy * ticksHastaLinea;
             const margenPoste = 14;
             return yProyectada >= (goalTop - margenPoste) && yProyectada <= (goalBottom + margenPoste);
@@ -140,6 +170,8 @@
          * - Atajada (+50)
          * - Despeje / Bola clara (+20)
          * - Tiro al arco (+10)
+         * Con `diferirTiro: true`, el tiro al arco espera a ver si termina en gol (solo muestra ¡GOL!)
+         * o si es atajado/desviado/fallado (ahí sí emite TIRO AL ARCO).
          */
         function evaluarIntervencion({
             jugador,
@@ -148,7 +180,8 @@
             pelotaDespues,
             campo,
             fuePatada = false,
-            superTiro = false
+            superTiro = false,
+            diferirTiro = false
         }) {
             const notificaciones = [];
             if (!jugador || (jugador.equipo !== 'red' && jugador.equipo !== 'blue')) return notificaciones;
@@ -179,6 +212,12 @@
             const enZonaDefensiva = distAlArcoPropio <= ancho * 0.32;
             const velocidadAntes = Math.hypot(pelotaAntes.vx, pelotaAntes.vy);
             const velocidadDespues = Math.hypot(pelotaDespues.vx, pelotaDespues.vy);
+
+            // Si un rival intercepta/toca un tiro pendiente hacia su arco, confirmar el tiro antes de la atajada.
+            if (tiroPendiente && tiroPendiente.jugador.id !== jugador.id && tiroPendiente.jugador.equipo !== jugador.equipo) {
+                const notifTiroPrevio = confirmarTiroPendiente(tickActual);
+                if (notifTiroPrevio) notificaciones.push(notifTiroPrevio);
+            }
 
             // 1. Atajada: interceptó un remate que iba al arco propio y evitó que siga hacia ese arco
             if (ibaAlArcoPropio && !sigueAlArcoPropio && velocidadAntes >= 2.2 && distAlArcoPropio <= ancho * 0.42) {
@@ -216,7 +255,18 @@
             );
             const minVelTiro = fuePatada ? 3.5 : 5.2;
             if (vaAlArcoRival && velocidadDespues >= minVelTiro && (fuePatada || superTiro)) {
-                if (puedeRegistrarJugada(jugador.id, 'tiro', tickActual)) {
+                if (diferirTiro) {
+                    if (!estaEnCooldownJugada(jugador.id, 'tiro', tickActual)) {
+                        tiroPendiente = {
+                            jugador: { id: jugador.id, nombre: jugador.nombre, equipo: jugador.equipo },
+                            arcoRivalX,
+                            ladoRival,
+                            goalTop,
+                            goalBottom,
+                            creadoTick: tickActual
+                        };
+                    }
+                } else if (puedeRegistrarJugada(jugador.id, 'tiro', tickActual)) {
                     sumarPuntos(jugador, 'tiros', PUNTOS.TIRO_AL_ARCO);
                     notificaciones.push({
                         tipo: 'tiro',
@@ -232,7 +282,32 @@
             return notificaciones;
         }
 
+        function actualizarTirosPendientes(tickActual, pelotaActual) {
+            if (!tiroPendiente) return [];
+            const edad = tickActual - tiroPendiente.creadoTick;
+            if (edad < 8) return [];
+
+            const sigueEnTrayectoria = pelotaActual && vaHaciaArco(
+                pelotaActual.x,
+                pelotaActual.y,
+                pelotaActual.vx,
+                pelotaActual.vy,
+                tiroPendiente.arcoRivalX,
+                tiroPendiente.goalTop,
+                tiroPendiente.goalBottom,
+                tiroPendiente.ladoRival
+            );
+
+            if (!sigueEnTrayectoria || edad >= MAX_ESPERA_TIRO_TICKS) {
+                const notif = confirmarTiroPendiente(tickActual);
+                return notif ? [notif] : [];
+            }
+            return [];
+        }
+
         function registrarGol({ equipoGol, autorJugador, jugadoresSala = [], tickActual = 0, superTiro = false }) {
+            // Al convertirse el gol, descartamos el tiro al arco pendiente para no duplicar notificaciones.
+            tiroPendiente = null;
             const notificaciones = [];
             const enContra = !!(autorJugador && autorJugador.equipo !== equipoGol);
 
@@ -280,6 +355,7 @@
 
         function limpiarHistorialSaque() {
             historialToques.length = 0;
+            tiroPendiente = null;
         }
 
         function obtenerResumen(jugadoresActuales = []) {
@@ -308,6 +384,7 @@
         return {
             registrarToque,
             evaluarIntervencion,
+            actualizarTirosPendientes,
             registrarGol,
             limpiarHistorialSaque,
             obtenerResumen,
@@ -318,6 +395,8 @@
     const PuntuacionPartido = {
         PUNTOS,
         COOLDOWN_TOQUE_TICKS,
+        COOLDOWN_TIRO_TICKS,
+        COOLDOWN_ATAJADA_TICKS,
         VENTANA_ASISTENCIA_TICKS,
         crearMotorPuntuacion
     };

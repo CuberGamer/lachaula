@@ -38,16 +38,16 @@
         return Math.max(1, mapa.width / ancho);
     }
 
-    function actualizarCamara(camaraActual, mapa, foco, zoomNivel = 0, delta = 16.67) {
+    function actualizarCamaraConZoom(camaraActual, mapa, foco, objetivoZoom, delta = 16.67, rapidezZoomMs = 120) {
         if (!mapa || !mapa.width || !mapa.height) return null;
-        const objetivoZoom = zoomDe(mapa, zoomNivel);
+        const zoomTarget = Math.max(1, Number(objetivoZoom) || 1);
         const punto = foco || { x: mapa.width / 2, y: mapa.height / 2 };
         let camara = camaraActual;
         if (!camara || camara.mapa !== mapa.id || camara.ancho !== mapa.width || camara.alto !== mapa.height) {
             camara = {
                 x: punto.x,
                 y: punto.y,
-                zoom: objetivoZoom,
+                zoom: zoomTarget,
                 mapa: mapa.id,
                 ancho: mapa.width,
                 alto: mapa.height
@@ -55,8 +55,8 @@
         }
         const dt = Math.max(0, Number(delta) || 0);
         const suave = 1 - Math.exp(-dt / 90);
-        const suaveZoom = 1 - Math.exp(-dt / 120);
-        camara.zoom += (objetivoZoom - camara.zoom) * suaveZoom;
+        const suaveZoom = 1 - Math.exp(-dt / Math.max(20, rapidezZoomMs));
+        camara.zoom += (zoomTarget - camara.zoom) * suaveZoom;
         camara.x += (punto.x - camara.x) * suave;
         camara.y += (punto.y - camara.y) * suave;
 
@@ -65,6 +65,18 @@
         camara.x = Math.min(mapa.width - mitadAncho, Math.max(mitadAncho, camara.x));
         camara.y = Math.min(mapa.height - mitadAlto, Math.max(mitadAlto, camara.y));
         return camara;
+    }
+
+    function actualizarCamara(camaraActual, mapa, foco, zoomNivel = 0, delta = 16.67) {
+        return actualizarCamaraConZoom(camaraActual, mapa, foco, zoomDe(mapa, zoomNivel), delta, 120);
+    }
+
+    function actualizarCamaraReplay(camaraActual, mapa, foco, zoomNivel = 0, enCamaraLenta = false, delta = 16.67) {
+        const zoomBase = zoomDe(mapa, zoomNivel);
+        const objetivoZoom = enCamaraLenta
+            ? Math.min(2.3, Math.max(zoomBase * 1.45, 1.55))
+            : zoomBase;
+        return actualizarCamaraConZoom(camaraActual, mapa, foco, objetivoZoom, delta, enCamaraLenta ? 95 : 140);
     }
 
     function debeMostrarMinimapa(camara) {
@@ -89,6 +101,7 @@
         UMBRAL_MINIMAPA,
         zoomDe,
         actualizarCamara,
+        actualizarCamaraReplay,
         debeMostrarMinimapa,
         viewportMinimapa
     };
